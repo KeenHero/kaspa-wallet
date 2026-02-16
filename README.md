@@ -10,6 +10,12 @@ This project supports both:
 
 Active development. Use carefully and test with small amounts first.
 
+## Screenshot
+
+<p align="center">
+  <img src="./screenshot.jpg" alt="Kaspa Wallet desktop screenshot" width="100%" />
+</p>
+
 ## Features
 
 - Multi-wallet vault (create, import, switch, rename, delete)
