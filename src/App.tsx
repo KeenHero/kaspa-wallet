@@ -1,5 +1,5 @@
 import { useEffect } from 'react'
-import { Routes, Route } from 'react-router-dom'
+import { Routes, Route, Navigate } from 'react-router-dom'
 import { useWalletStore } from './stores/walletStore'
 import Layout from './components/Layout'
 import Dashboard from './pages/Dashboard'
@@ -39,6 +39,7 @@ function App() {
         <Route path="history" element={<History />} />
         <Route path="settings" element={<Settings />} />
       </Route>
+      <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   )
 }
