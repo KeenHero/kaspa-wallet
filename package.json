@@ -1,10 +1,42 @@
 {
-  "name": "kaspa-wallet",
-  "private": true,
+  "name": "@keenhero/kaspa-wallet",
   "version": "1.0.0",
   "description": "Kaspa desktop wallet",
-  "author": "Kaspa Wallet",
+  "author": "KeenHero",
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/KeenHero/kaspa-wallet.git"
+  },
+  "homepage": "https://github.com/KeenHero/kaspa-wallet#readme",
+  "bugs": {
+    "url": "https://github.com/KeenHero/kaspa-wallet/issues"
+  },
+  "keywords": [
+    "kaspa",
+    "wallet",
+    "electron",
+    "desktop",
+    "crypto"
+  ],
   "main": "electron/main.cjs",
+  "bin": {
+    "kaspa-wallet": "bin/kaspa-wallet.cjs"
+  },
+  "files": [
+    "dist/**/*",
+    "electron/**/*",
+    "bin/**/*",
+    "README.md",
+    "screenshot.jpg",
+    "package.json"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=20"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -12,6 +44,7 @@
     "dev:electron": "wait-on tcp:5173 && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron .",
     "dev:desktop": "concurrently -k \"npm:dev:renderer\" \"npm:dev:electron\"",
     "build": "tsc -b && vite build",
+    "prepack": "npm run build",
     "build:desktop": "npm run build && electron-builder --dir",
     "dist:desktop": "npm run build && electron-builder",
     "start:desktop": "electron .",
@@ -59,6 +92,7 @@
     "class-variance-authority": "^0.7.0",
     "clsx": "^2.1.1",
     "ecpair": "^2.1.0",
+    "electron": "^37.2.6",
     "framer-motion": "^11.3.24",
     "lucide-react": "^0.436.0",
     "qrcode.react": "^3.1.0",
@@ -78,7 +112,6 @@
     "autoprefixer": "^10.4.20",
     "concurrently": "^9.2.1",
     "cross-env": "^7.0.3",
-    "electron": "^37.2.6",
     "electron-builder": "^25.1.8",
     "eslint": "^9.9.0",
     "eslint-plugin-react-hooks": "^5.1.0-rc.0",

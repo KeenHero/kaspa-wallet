@@ -57,6 +57,15 @@ Important:
 npm install
 ```
 
+### Install Globally (npm)
+
+After publishing to npm:
+
+```bash
+npm install -g @keenhero/kaspa-wallet
+kaspa-wallet
+```
+
 ### Run Web App (Vite)
 
 ```bash
@@ -94,6 +103,18 @@ npm run dist:desktop
 ```
 
 Installer/output artifacts are generated in `release/`.
+
+### Publish to npm
+
+```bash
+npm login
+npm publish
+```
+
+Notes:
+- The package is configured as `@keenhero/kaspa-wallet`.
+- `prepack` automatically builds `dist/` before publishing.
+- The global command exposed by this package is `kaspa-wallet`.
 
 ## Scripts
 
