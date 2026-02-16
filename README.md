@@ -6,6 +6,10 @@ This project supports both:
 - Browser app (`vite` dev/build)
 - Desktop app (`electron` + `electron-builder`)
 
+Primary user flow:
+- Install globally from npm
+- Launch with `kaspa-wallet`
+
 ## Status
 
 Active development. Use carefully and test with small amounts first.
@@ -51,52 +55,76 @@ Important:
 - Node.js 20+ recommended
 - npm
 
-### Install
-
-```bash
-npm install
-```
-
-### Install Globally (npm)
-
-After publishing to npm:
+### Recommended: Install and Run Globally
 
 ```bash
 npm install -g @keenherox/kaspa-wallet
 kaspa-wallet
 ```
 
-### Run Web App (Vite)
+### If `kaspa-wallet` Is Not Recognized (Windows)
+
+Run:
+
+```powershell
+npm config get prefix
+```
+
+Your npm global bin directory should usually be:
+
+- `C:\Users\keen\AppData\Roaming\npm`
+
+If needed, add that directory to your `PATH`, then restart terminal.
+
+### If You Installed Locally by Mistake
+
+If you ran `npm i @keenherox/kaspa-wallet` (without `-g`), uninstall and reinstall globally:
+
+```bash
+npm uninstall @keenherox/kaspa-wallet
+npm install -g @keenherox/kaspa-wallet
+kaspa-wallet
+```
+
+### Development Setup (Contributors)
+
+Install dependencies:
+
+```bash
+npm install
+```
+
+Run web dev:
 
 ```bash
 npm run dev
 ```
 
-### Run Desktop App (Electron + Vite)
+Run desktop dev (Vite + Electron):
 
 ```bash
 npm run dev:desktop
 ```
 
-### Lint
+Lint:
 
 ```bash
 npm run lint
 ```
 
-### Build Web App
+Build web app:
 
 ```bash
 npm run build
 ```
 
-### Build Desktop App
+Build desktop app:
 
 ```bash
 npm run build:desktop
 ```
 
-### Create Desktop Installer
+Create desktop installer:
 
 ```bash
 npm run dist:desktop
@@ -157,6 +185,10 @@ Notes:
 
 - `Invalid Kaspa address`:
   - Ensure address prefix matches selected network (`kaspa:` vs `kaspatest:`).
+
+- `npm audit` shows unrelated vulnerabilities (for example `xlsx`) outside this package:
+  - `@keenherox/kaspa-wallet` does not include `xlsx`.
+  - Running `npm audit` from another folder audits that folder's dependency tree, not this package globally.
 
 ## Research Notes
 
