@@ -62,7 +62,7 @@ npm install
 After publishing to npm:
 
 ```bash
-npm install -g @keenhero/kaspa-wallet
+npm install -g @keenherox/kaspa-wallet
 kaspa-wallet
 ```
 
@@ -112,7 +112,7 @@ npm publish
 ```
 
 Notes:
-- The package is configured as `@keenhero/kaspa-wallet`.
+- The package is configured as `@keenherox/kaspa-wallet`.
 - `prepack` automatically builds `dist/` before publishing.
 - The global command exposed by this package is `kaspa-wallet`.
 
