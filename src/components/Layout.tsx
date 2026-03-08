@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react'
-import { NavLink, Outlet } from 'react-router-dom'
+import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { motion, AnimatePresence } from 'framer-motion'
 import { 
   Wallet, 
   Send, 
   History, 
   Settings, 
+  Globe,
   QrCode,
   Menu,
   X,
@@ -22,10 +23,12 @@ const navItems = [
   { path: '/send', icon: Send, label: 'Send' },
   { path: '/receive', icon: QrCode, label: 'Receive' },
   { path: '/history', icon: History, label: 'History' },
+  { path: '/explorer', icon: Globe, label: 'Explorer' },
   { path: '/settings', icon: Settings, label: 'Settings' },
 ]
 
 export default function Layout() {
+  const location = useLocation()
   const [isSidebarOpen, setIsSidebarOpen] = useState(true)
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false)
   const [showNetworkDropdown, setShowNetworkDropdown] = useState(false)
@@ -46,6 +49,7 @@ export default function Layout() {
     isLocked,
   } = useWalletStore()
   const activeAccount = wallet?.accounts.find((account) => account.id === selectedAccountId) ?? wallet?.accounts[0]
+  const isExplorerRoute = location.pathname.startsWith('/explorer')
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -347,7 +351,12 @@ export default function Layout() {
 
       {/* Main Content */}
       <main className="flex-1 min-h-screen md:pt-0 pt-16">
-        <div className="max-w-6xl mx-auto p-4 md:p-8">
+        <div
+          className={cn(
+            'mx-auto w-full p-4 md:p-8',
+            isExplorerRoute ? 'max-w-[1560px] 2xl:px-10' : 'max-w-6xl'
+          )}
+        >
           <Outlet />
         </div>
       </main>

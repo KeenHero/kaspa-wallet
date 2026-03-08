@@ -7,6 +7,7 @@ import Send from './pages/Send'
 import Receive from './pages/Receive'
 import History from './pages/History'
 import Settings from './pages/Settings'
+import Explorer from './pages/Explorer'
 import Welcome from './pages/Welcome'
 import Onboarding from './pages/Onboarding'
 import Unlock from './pages/Unlock'
@@ -37,6 +38,7 @@ function App() {
         <Route path="send" element={<Send />} />
         <Route path="receive" element={<Receive />} />
         <Route path="history" element={<History />} />
+        <Route path="explorer" element={<Explorer />} />
         <Route path="settings" element={<Settings />} />
       </Route>
       <Route path="*" element={<Navigate to="/" replace />} />

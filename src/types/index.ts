@@ -132,4 +132,7 @@ export interface DagInfo {
   difficulty: number
   pastMedianTime: number
   virtualSelectedParentBlueScore: number
+  tipHashes?: string[]
+  networkName?: string
+  sink?: string
 }
