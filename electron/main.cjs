@@ -2,6 +2,34 @@ const { app, BrowserWindow, shell } = require('electron')
 const path = require('path')
 
 const isDev = Boolean(process.env.VITE_DEV_SERVER_URL)
+const ALLOWED_EXTERNAL_HOSTS = new Set([
+  'kaspa.org',
+  'www.kaspa.org',
+  'explorer.kaspa.org',
+  'explorer-tn10.kaspa.org',
+  'explorer-tn11.kaspa.org',
+])
+
+function isAllowedExternalUrl(url) {
+  try {
+    const parsed = new URL(url)
+    return parsed.protocol === 'https:' && ALLOWED_EXTERNAL_HOSTS.has(parsed.hostname)
+  } catch {
+    return false
+  }
+}
+
+function isAllowedDevNavigation(url) {
+  if (!process.env.VITE_DEV_SERVER_URL) return false
+
+  try {
+    const devServerUrl = new URL(process.env.VITE_DEV_SERVER_URL)
+    const parsed = new URL(url)
+    return parsed.origin === devServerUrl.origin
+  } catch {
+    return false
+  }
+}
 
 function createMainWindow() {
   const window = new BrowserWindow({
@@ -27,23 +55,28 @@ function createMainWindow() {
   }
 
   window.webContents.setWindowOpenHandler(({ url }) => {
-    shell.openExternal(url)
+    if (isAllowedExternalUrl(url)) {
+      void shell.openExternal(url)
+    }
     return { action: 'deny' }
   })
 
   window.webContents.on('will-navigate', (event, url) => {
     if (isDev) {
-      const devUrl = process.env.VITE_DEV_SERVER_URL || ''
-      if (!url.startsWith(devUrl)) {
+      if (!isAllowedDevNavigation(url)) {
         event.preventDefault()
-        shell.openExternal(url)
+        if (isAllowedExternalUrl(url)) {
+          void shell.openExternal(url)
+        }
       }
       return
     }
 
     if (!url.startsWith('file://')) {
       event.preventDefault()
-      shell.openExternal(url)
+      if (isAllowedExternalUrl(url)) {
+        void shell.openExternal(url)
+      }
     }
   })
 }

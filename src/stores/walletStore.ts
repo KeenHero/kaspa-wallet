@@ -376,29 +376,29 @@ export const useWalletStore = create<WalletState>((set, get) => ({
           autoLockMinutes: getDefaultAutoLockMinutes(),
         }
         sessionVault = legacyVault
-        const activeAccount = getActiveAccount(legacyProfile.wallet, legacyProfile.selectedAccountId)
 
         api.setNetwork(network)
         set({
           isInitialized: true,
           hasWallet: true,
-          isLocked: false,
+          isLocked: true,
           needsMigration: true,
           walletProfiles: summarizeProfiles(legacyVault),
           activeWalletId: legacyProfile.id,
           activeWalletName: legacyProfile.name,
           autoLockMinutes: legacyVault.autoLockMinutes,
-          wallet: legacyProfile.wallet,
+          wallet: null,
           network,
-          selectedAccountId: legacyProfile.selectedAccountId,
-          contacts: legacyProfile.contacts,
-          address: activeAccount?.address ?? '',
+          selectedAccountId: '0',
+          contacts: [],
+          balance: 0,
+          utxos: [],
+          transactions: [],
+          address: '',
+          sendFeeEstimate: null,
+          isEstimatingFees: false,
           error: 'Set a password to encrypt and secure your existing wallet.',
         })
-
-        void get().fetchBalance()
-        void get().fetchTransactions()
-        void get().fetchFeeEstimate()
         return
       }
 
@@ -664,14 +664,26 @@ export const useWalletStore = create<WalletState>((set, get) => ({
 
     set({ isLoading: true, error: null })
     try {
-      await saveEncryptedWalletToStorage(sessionVault, password)
+      const legacyVault = sessionVault
+
+      await saveEncryptedWalletToStorage(legacyVault, password)
       clearLegacyWalletStorage()
       sessionPassword = password
+      sessionVault = legacyVault
+      applyActiveWalletToState(set, legacyVault)
       set({
-        needsMigration: false,
         isLoading: false,
+        balance: 0,
+        utxos: [],
+        transactions: [],
+        sendFeeEstimate: null,
+        isEstimatingFees: false,
         error: null,
       })
+
+      await get().fetchBalance()
+      await get().fetchTransactions()
+      await get().fetchFeeEstimate()
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to secure wallet'
       set({
@@ -683,20 +695,16 @@ export const useWalletStore = create<WalletState>((set, get) => ({
   },
 
   lockWallet: () => {
-    if (get().needsMigration) {
-      set({
-        error: 'Set a password and encrypt this wallet before locking or logging out.',
-      })
-      return
+    const { walletProfiles, activeWalletId, activeWalletName, autoLockMinutes, needsMigration } = get()
+    if (!needsMigration) {
+      clearSessionReferences()
     }
-
-    const { walletProfiles, activeWalletId, activeWalletName, autoLockMinutes } = get()
-    clearSessionReferences()
     api.setNetwork(NETWORKS.mainnet)
 
     set({
-      hasWallet: walletProfiles.length > 0 || hasEncryptedWalletInStorage(),
+      hasWallet: needsMigration || walletProfiles.length > 0 || hasEncryptedWalletInStorage(),
       isLocked: true,
+      needsMigration,
       walletProfiles,
       activeWalletId,
       activeWalletName,
