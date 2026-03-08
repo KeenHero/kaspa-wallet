@@ -33,6 +33,13 @@ Active development. Use carefully and test with small amounts first.
 - Dynamic fee estimation using transaction mass when possible
 - Broadcast retry handling for transient RPC/network errors
 - Auto-lock inactivity timer with presets and custom minutes
+- Integrated Kaspa explorer inside the wallet
+- Live chain monitor with DAG-style visualization of recent blocks and live tips
+- Explorer search for addresses, transaction hashes, and block hashes
+- Explorer result auto-scroll with jump-to-result helper
+- Responsive explorer layout for desktop and mobile
+- Explorer info popups for chain, block, transaction, and market data sections
+- Latest blocks, recent block flow, rich list, hashrate history, and address distribution views
 - Electron desktop packaging for Windows (NSIS target configured)
 
 ## Security Model
@@ -165,10 +172,10 @@ Notes:
 
 ## Project Structure
 
-- `src/pages`: app screens (`Welcome`, `Unlock`, `Dashboard`, `Send`, `Receive`, `History`, `Settings`)
+- `src/pages`: app screens (`Welcome`, `Unlock`, `Dashboard`, `Send`, `Receive`, `History`, `Explorer`, `Settings`)
 - `src/stores/walletStore.ts`: global wallet state and actions
 - `src/lib/wallet.ts`: wallet creation, key derivation, encryption/storage
-- `src/lib/kaspa.ts`: Kaspa REST API client and fee helpers
+- `src/lib/kaspa.ts`: Kaspa REST API client, explorer data fetchers, and fee helpers
 - `src/lib/transaction.ts`: transaction construction/signing helpers
 - `electron/main.cjs`: Electron main process window/bootstrap
 - `electron/preload.cjs`: safe preload bridge
