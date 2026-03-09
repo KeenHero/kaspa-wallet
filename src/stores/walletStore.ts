@@ -9,6 +9,8 @@ import {
   type UTXO,
   type Transaction,
   type FeeEstimate,
+  type Krc20Operation,
+  type Krc20PortfolioToken,
 } from '../types'
 import { kaspaAPI } from '../lib/kaspa'
 import { buildSignedTransaction } from '../lib/transaction'
@@ -49,10 +51,14 @@ interface WalletState {
   balance: number
   utxos: UTXO[]
   transactions: Transaction[]
+  krc20Portfolio: Krc20PortfolioToken[]
+  krc20Operations: Krc20Operation[]
   feeEstimate: FeeEstimate
   sendFeeEstimate: FeeEstimate | null
   isEstimatingFees: boolean
   isLoading: boolean
+  isLoadingKrc20: boolean
+  krc20StatusMessage: string | null
   error: string | null
   address: string
 
@@ -79,6 +85,8 @@ interface WalletState {
   removeContact: (contactId: string) => void
   fetchBalance: () => Promise<void>
   fetchTransactions: () => Promise<void>
+  fetchKrc20Portfolio: () => Promise<void>
+  fetchKrc20Operations: () => Promise<void>
   fetchFeeEstimate: () => Promise<void>
   estimateSendFees: (toAddress: string, amount: number) => Promise<void>
   sendTransaction: (toAddress: string, amount: number, fee: number) => Promise<string>
@@ -99,6 +107,13 @@ const DEFAULT_FEE_ESTIMATE: FeeEstimate = {
   slowSeconds: 1800,
   normalSeconds: 600,
   fastSeconds: 60,
+}
+
+const EMPTY_KRC20_STATE = {
+  krc20Portfolio: [] as Krc20PortfolioToken[],
+  krc20Operations: [] as Krc20Operation[],
+  isLoadingKrc20: false,
+  krc20StatusMessage: null as string | null,
 }
 
 function resolveNetwork(networkKey?: string): KaspaNetwork {
@@ -283,6 +298,7 @@ function applyActiveWalletToState(set: (partial: Partial<WalletState>) => void, 
     selectedAccountId,
     contacts: normalizedContacts,
     address: activeAccount?.address ?? '',
+    ...EMPTY_KRC20_STATE,
     sendFeeEstimate: null,
     error: null,
   })
@@ -293,6 +309,22 @@ function applyActiveWalletToState(set: (partial: Partial<WalletState>) => void, 
 function clearSessionReferences(): void {
   sessionPassword = null
   sessionVault = null
+}
+
+function isKrc20StatusError(message: string): boolean {
+  const normalized = message.toLowerCase()
+  return normalized.includes('krc-20') || normalized.includes('kasplex')
+}
+
+async function refreshAccountData(get: () => WalletState): Promise<void> {
+  const state = get()
+  await Promise.allSettled([
+    state.fetchBalance(),
+    state.fetchTransactions(),
+    state.fetchKrc20Portfolio(),
+    state.fetchKrc20Operations(),
+    state.fetchFeeEstimate(),
+  ])
 }
 
 export const useWalletStore = create<WalletState>((set, get) => ({
@@ -311,6 +343,7 @@ export const useWalletStore = create<WalletState>((set, get) => ({
   balance: 0,
   utxos: [],
   transactions: [],
+  ...EMPTY_KRC20_STATE,
   feeEstimate: DEFAULT_FEE_ESTIMATE,
   sendFeeEstimate: null,
   isEstimatingFees: false,
@@ -453,14 +486,13 @@ export const useWalletStore = create<WalletState>((set, get) => ({
         balance: 0,
         utxos: [],
         transactions: [],
+        ...EMPTY_KRC20_STATE,
         sendFeeEstimate: null,
         isEstimatingFees: false,
         error: null,
       })
 
-      await get().fetchBalance()
-      await get().fetchTransactions()
-      await get().fetchFeeEstimate()
+      await refreshAccountData(get)
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to create wallet'
       set({ error: message })
@@ -493,14 +525,13 @@ export const useWalletStore = create<WalletState>((set, get) => ({
         balance: 0,
         utxos: [],
         transactions: [],
+        ...EMPTY_KRC20_STATE,
         sendFeeEstimate: null,
         isEstimatingFees: false,
         error: null,
       })
 
-      await get().fetchBalance()
-      await get().fetchTransactions()
-      await get().fetchFeeEstimate()
+      await refreshAccountData(get)
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Invalid mnemonic or network mismatch'
       set({ error: message })
@@ -527,14 +558,13 @@ export const useWalletStore = create<WalletState>((set, get) => ({
         balance: 0,
         utxos: [],
         transactions: [],
+        ...EMPTY_KRC20_STATE,
         sendFeeEstimate: null,
         isEstimatingFees: false,
         error: null,
       })
 
-      await get().fetchBalance()
-      await get().fetchTransactions()
-      await get().fetchFeeEstimate()
+      await refreshAccountData(get)
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to create wallet'
       set({ error: message })
@@ -560,14 +590,13 @@ export const useWalletStore = create<WalletState>((set, get) => ({
         balance: 0,
         utxos: [],
         transactions: [],
+        ...EMPTY_KRC20_STATE,
         sendFeeEstimate: null,
         isEstimatingFees: false,
         error: null,
       })
 
-      await get().fetchBalance()
-      await get().fetchTransactions()
-      await get().fetchFeeEstimate()
+      await refreshAccountData(get)
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Invalid mnemonic or network mismatch'
       set({ error: message })
@@ -608,12 +637,11 @@ export const useWalletStore = create<WalletState>((set, get) => ({
         balance: 0,
         utxos: [],
         transactions: [],
+        ...EMPTY_KRC20_STATE,
         sendFeeEstimate: null,
       })
 
-      await get().fetchBalance()
-      await get().fetchTransactions()
-      await get().fetchFeeEstimate()
+      await refreshAccountData(get)
     } catch (error) {
       clearSessionReferences()
       const message = error instanceof Error ? error.message : 'Failed to create wallet'
@@ -645,12 +673,11 @@ export const useWalletStore = create<WalletState>((set, get) => ({
         balance: 0,
         utxos: [],
         transactions: [],
+        ...EMPTY_KRC20_STATE,
       })
 
       await persistSessionVault()
-      await get().fetchBalance()
-      await get().fetchTransactions()
-      await get().fetchFeeEstimate()
+      await refreshAccountData(get)
     } catch {
       clearSessionReferences()
       const message = 'Invalid password or encrypted wallet data'
@@ -677,14 +704,13 @@ export const useWalletStore = create<WalletState>((set, get) => ({
         balance: 0,
         utxos: [],
         transactions: [],
+        ...EMPTY_KRC20_STATE,
         sendFeeEstimate: null,
         isEstimatingFees: false,
         error: null,
       })
 
-      await get().fetchBalance()
-      await get().fetchTransactions()
-      await get().fetchFeeEstimate()
+      await refreshAccountData(get)
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to secure wallet'
       set({
@@ -716,6 +742,7 @@ export const useWalletStore = create<WalletState>((set, get) => ({
       balance: 0,
       utxos: [],
       transactions: [],
+      ...EMPTY_KRC20_STATE,
       address: '',
       sendFeeEstimate: null,
       isEstimatingFees: false,
@@ -757,6 +784,7 @@ export const useWalletStore = create<WalletState>((set, get) => ({
           balance: 0,
           utxos: [],
           transactions: [],
+          ...EMPTY_KRC20_STATE,
           feeEstimate: DEFAULT_FEE_ESTIMATE,
           sendFeeEstimate: null,
           isEstimatingFees: false,
@@ -778,10 +806,9 @@ export const useWalletStore = create<WalletState>((set, get) => ({
         balance: 0,
         utxos: [],
         transactions: [],
+        ...EMPTY_KRC20_STATE,
       })
-      await get().fetchBalance()
-      await get().fetchTransactions()
-      await get().fetchFeeEstimate()
+      await refreshAccountData(get)
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to delete wallet'
       set({ error: message })
@@ -802,12 +829,11 @@ export const useWalletStore = create<WalletState>((set, get) => ({
         balance: 0,
         utxos: [],
         transactions: [],
+        ...EMPTY_KRC20_STATE,
       })
 
       await persistSessionVault()
-      await get().fetchBalance()
-      await get().fetchTransactions()
-      await get().fetchFeeEstimate()
+      await refreshAccountData(get)
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to switch wallet'
       set({ error: message })
@@ -884,6 +910,7 @@ export const useWalletStore = create<WalletState>((set, get) => ({
         wallet: updatedWallet,
         selectedAccountId: nextSelectedAccountId,
         address: activeAccount.address,
+        ...EMPTY_KRC20_STATE,
         sendFeeEstimate: null,
         error: null,
       })
@@ -905,11 +932,9 @@ export const useWalletStore = create<WalletState>((set, get) => ({
         // Ignore persistence while locked.
       }
 
-      void get().fetchBalance()
-      void get().fetchTransactions()
-      void get().fetchFeeEstimate()
+      void refreshAccountData(get)
     } else {
-      set({ network, sendFeeEstimate: null })
+      set({ network, ...EMPTY_KRC20_STATE, sendFeeEstimate: null })
     }
   },
 
@@ -935,6 +960,7 @@ export const useWalletStore = create<WalletState>((set, get) => ({
       wallet: updatedWallet,
       selectedAccountId: newAccount.id,
       address: newAccount.address,
+      ...EMPTY_KRC20_STATE,
       sendFeeEstimate: null,
       error: null,
     })
@@ -953,9 +979,7 @@ export const useWalletStore = create<WalletState>((set, get) => ({
       // Ignore persistence while locked.
     }
 
-    void get().fetchBalance()
-    void get().fetchTransactions()
-    void get().fetchFeeEstimate()
+    void refreshAccountData(get)
   },
 
   switchAccount: (accountId: string) => {
@@ -968,6 +992,7 @@ export const useWalletStore = create<WalletState>((set, get) => ({
     set({
       selectedAccountId: account.id,
       address: account.address,
+      ...EMPTY_KRC20_STATE,
       sendFeeEstimate: null,
       error: null,
     })
@@ -985,9 +1010,7 @@ export const useWalletStore = create<WalletState>((set, get) => ({
       // Ignore persistence while locked.
     }
 
-    void get().fetchBalance()
-    void get().fetchTransactions()
-    void get().fetchFeeEstimate()
+    void refreshAccountData(get)
   },
 
   renameAccount: (accountId: string, name: string) => {
@@ -1125,6 +1148,61 @@ export const useWalletStore = create<WalletState>((set, get) => ({
       set({ transactions: txs })
     } catch (error) {
       console.error('Failed to fetch transactions:', error)
+    }
+  },
+
+  fetchKrc20Portfolio: async () => {
+    const { address } = get()
+    if (!address) {
+      set({ ...EMPTY_KRC20_STATE })
+      return
+    }
+
+    set({ isLoadingKrc20: true, krc20StatusMessage: null })
+    try {
+      const portfolio = await api.getKrc20Portfolio(address)
+      set({
+        krc20Portfolio: portfolio,
+        isLoadingKrc20: false,
+        krc20StatusMessage:
+          portfolio.length === 0
+            ? 'No KRC-20 balances detected for this account yet.'
+            : null,
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to load KRC-20 portfolio'
+      console.error('Failed to fetch KRC-20 portfolio:', error)
+      set({
+        krc20Portfolio: [],
+        isLoadingKrc20: false,
+        krc20StatusMessage: isKrc20StatusError(message) ? message : 'KRC-20 portfolio is temporarily unavailable.',
+      })
+    }
+  },
+
+  fetchKrc20Operations: async () => {
+    const { address } = get()
+    if (!address) {
+      set({ krc20Operations: [] })
+      return
+    }
+
+    try {
+      const operations = await api.getKrc20Operations({ address, limit: 50 })
+      set({
+        krc20Operations: operations,
+        krc20StatusMessage:
+          get().krc20StatusMessage && operations.length > 0
+            ? null
+            : get().krc20StatusMessage,
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to load KRC-20 activity'
+      console.error('Failed to fetch KRC-20 activity:', error)
+      set({
+        krc20Operations: [],
+        krc20StatusMessage: isKrc20StatusError(message) ? message : 'KRC-20 activity is temporarily unavailable.',
+      })
     }
   },
 
@@ -1280,8 +1358,12 @@ export const useWalletStore = create<WalletState>((set, get) => ({
       }
 
       set({ isLoading: false })
-      await get().fetchBalance()
-      await get().fetchTransactions()
+      await Promise.allSettled([
+        get().fetchBalance(),
+        get().fetchTransactions(),
+        get().fetchKrc20Portfolio(),
+        get().fetchKrc20Operations(),
+      ])
 
       return txId
     } catch (error) {

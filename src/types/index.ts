@@ -2,6 +2,7 @@ export interface KaspaNetwork {
   id: string
   name: string
   apiUrl: string
+  krc20ApiUrl?: string
   explorerUrl: string
   prefix: string
   isTestnet: boolean
@@ -12,6 +13,7 @@ export const NETWORKS: Record<string, KaspaNetwork> = {
     id: 'mainnet',
     name: 'Mainnet',
     apiUrl: 'https://api.kaspa.org',
+    krc20ApiUrl: 'https://api.kasplex.org/v1',
     explorerUrl: 'https://explorer.kaspa.org',
     prefix: 'kaspa',
     isTestnet: false,
@@ -20,6 +22,7 @@ export const NETWORKS: Record<string, KaspaNetwork> = {
     id: 'testnet10',
     name: 'Testnet 10',
     apiUrl: 'https://api-tn10.kaspa.org',
+    krc20ApiUrl: 'https://tn10api.kasplex.org/v1',
     explorerUrl: 'https://explorer-tn10.kaspa.org',
     prefix: 'kaspatest',
     isTestnet: true,
@@ -135,4 +138,65 @@ export interface DagInfo {
   tipHashes?: string[]
   networkName?: string
   sink?: string
+}
+
+export interface Krc20TokenBalance {
+  tick: string
+  contractAddress?: string
+  balanceRaw: string
+  lockedRaw: string
+  decimals: number
+  opScoreMod: string
+}
+
+export interface Krc20TokenInfo {
+  tick: string
+  contractAddress?: string
+  name?: string
+  maxRaw: string
+  limitRaw: string
+  premineRaw: string
+  toAddress: string
+  decimals: number
+  mode: string
+  mintedRaw: string
+  burnedRaw: string
+  state: string
+  hashRev: string
+  opScoreAdd?: string
+  opScoreMod?: string
+  createdAt?: number
+  holderTotal?: number
+  transferTotal?: number
+  mintTotal?: number
+}
+
+export interface Krc20PortfolioToken extends Krc20TokenBalance {
+  name?: string
+  state?: string
+  mode?: string
+  mintedRaw?: string
+  maxRaw?: string
+  holderTotal?: number
+  metadataLoaded: boolean
+}
+
+export interface Krc20Operation {
+  protocol: string
+  op: string
+  tick: string
+  contractAddress?: string
+  amountRaw: string
+  from?: string
+  to?: string
+  priceRaw?: string
+  feeRaw?: string
+  opScore: string
+  hashRev: string
+  txAccepted: boolean
+  opAccepted: boolean
+  opError?: string
+  checkpoint?: string
+  addedAt?: number
+  updatedAt?: number
 }

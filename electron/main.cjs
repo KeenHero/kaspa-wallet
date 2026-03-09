@@ -10,6 +10,10 @@ const ALLOWED_EXTERNAL_HOSTS = new Set([
   'explorer-tn10.kaspa.org',
   'explorer-tn11.kaspa.org',
 ])
+const ALLOWED_DESKTOP_FETCH_HOSTS = new Set([
+  'api.kasplex.org',
+  'tn10api.kasplex.org',
+])
 const WALLET_DIRECTORY_NAME = 'wallet-data'
 const WALLET_FILE_NAME = 'wallet.dat'
 const LEGACY_WALLET_FILE_NAME = 'kaspa-wallet-vault.json'
@@ -72,6 +76,15 @@ function isAllowedDevNavigation(url) {
     const devServerUrl = new URL(process.env.VITE_DEV_SERVER_URL)
     const parsed = new URL(url)
     return parsed.origin === devServerUrl.origin
+  } catch {
+    return false
+  }
+}
+
+function isAllowedDesktopFetchUrl(url) {
+  try {
+    const parsed = new URL(url)
+    return parsed.protocol === 'https:' && ALLOWED_DESKTOP_FETCH_HOSTS.has(parsed.hostname)
   } catch {
     return false
   }
@@ -208,6 +221,27 @@ ipcMain.handle('kaspa-desktop:backup-wallet-file', async () => {
   return {
     canceled: false,
     filePath: result.filePath,
+  }
+})
+
+ipcMain.handle('kaspa-desktop:http-get', async (_event, url) => {
+  if (!isAllowedDesktopFetchUrl(url)) {
+    throw new Error('Blocked desktop HTTP request')
+  }
+
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: {
+      Accept: 'application/json',
+    },
+  })
+  const body = await response.text()
+
+  return {
+    ok: response.ok,
+    status: response.status,
+    body,
+    contentType: response.headers.get('content-type') || '',
   }
 })
 

@@ -225,6 +225,9 @@ export default function SendPage() {
           Send KAS
         </h1>
         <p className="text-muted-foreground mt-1">Send Kaspa to any address</p>
+        <p className="text-xs text-muted-foreground mt-2">
+          KRC-20 balances are now indexed in the wallet. Token send will be added separately once the KRC-20 operation path is verified.
+        </p>
         {activeAccount && (
           <p className="text-xs text-muted-foreground mt-2">
             From: <span className="font-medium">{activeAccount.name}</span>

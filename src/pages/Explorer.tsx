@@ -1,4 +1,4 @@
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { type PointerEvent as ReactPointerEvent, type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
 import {
   Activity,
@@ -14,8 +14,13 @@ import {
   GitBranch,
   Hash,
   Info,
+  LocateFixed,
+  Minus,
+  Move,
   Network,
+  Plus,
   RefreshCw,
+  RotateCcw,
   Search,
   Server,
   ShieldCheck,
@@ -31,7 +36,9 @@ import {
   type ExplorerCoinSupply,
   type ExplorerHashratePoint,
   type ExplorerHealth,
+  type ExplorerLiveStreamController,
   type ExplorerRichListEntry,
+  type ExplorerStreamStatus,
 } from '../lib/kaspa'
 import { isValidKaspaAddress } from '../lib/wallet'
 import { useWalletStore } from '../stores/walletStore'
@@ -50,6 +57,7 @@ type LiveChainNode = {
   radius: number
   isTip: boolean
   isMainChain: boolean
+  depth: number
 }
 
 type LiveChainEdge = {
@@ -65,6 +73,12 @@ type LiveChainGraphModel = {
   height: number
   mainChainCount: number
   tipCount: number
+}
+
+type LiveCamera = {
+  zoom: number
+  panX: number
+  panY: number
 }
 
 function ts(value?: number): number | null {
@@ -162,8 +176,8 @@ function buildLiveChainGraph(blocks: ExplorerBlock[], tipHashes: string[]): Live
     return {
       nodes: [],
       edges: [],
-      width: 880,
-      height: 340,
+      width: 1320,
+      height: 420,
       mainChainCount: 0,
       tipCount: 0,
     }
@@ -210,10 +224,10 @@ function buildLiveChainGraph(blocks: ExplorerBlock[], tipHashes: string[]): Live
   }
 
   const maxAbsLane = Math.max(...[0, ...laneByHash.values()].map((lane) => Math.abs(lane)))
-  const width = Math.max(920, ordered.length * 104)
-  const height = Math.max(360, 250 + maxAbsLane * 120)
-  const leftPadding = 80
-  const rightPadding = 100
+  const width = 1320
+  const height = Math.max(420, 320 + maxAbsLane * 78)
+  const leftPadding = 110
+  const rightPadding = 120
   const middleY = height / 2
   const stepX = ordered.length === 1 ? 0 : (width - leftPadding - rightPadding) / (ordered.length - 1)
 
@@ -223,11 +237,12 @@ function buildLiveChainGraph(blocks: ExplorerBlock[], tipHashes: string[]): Live
     const node: LiveChainNode = {
       block,
       x: leftPadding + stepX * index,
-      y: middleY + lane * 88,
+      y: middleY + lane * 72,
       lane,
-      radius: 9 + Math.min(block.transactionCount, 20) * 0.22,
+      radius: 10 + Math.min(block.transactionCount, 22) * 0.2,
       isTip: tipSet.has(block.hash),
       isMainChain: mainChainHashes.has(block.hash),
+      depth: lane === 0 ? 0 : 16 + Math.abs(lane) * 8,
     }
     nodeMap.set(block.hash, node)
     return node
@@ -253,6 +268,139 @@ function buildLiveChainGraph(blocks: ExplorerBlock[], tipHashes: string[]): Live
     mainChainCount: mainChainHashes.size,
     tipCount: tipSet.size,
   }
+}
+
+function projectLiveNode(node: LiveChainNode) {
+  return {
+    x: node.x + node.lane * 14,
+    y: node.y - node.depth,
+    shadowY: node.y + 18,
+  }
+}
+
+function clampNumber(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value))
+}
+
+function getLiveGraphBounds(nodes: LiveChainNode[]) {
+  if (nodes.length === 0) {
+    return {
+      minX: 0,
+      maxX: 0,
+      minY: 0,
+      maxY: 0,
+      width: 0,
+      height: 0,
+    }
+  }
+
+  const projected = nodes.map((node) => {
+    const point = projectLiveNode(node)
+    return {
+      minX: point.x - node.radius - 42,
+      maxX: point.x + node.radius + 42,
+      minY: point.y - node.radius - 38,
+      maxY: point.shadowY + 26,
+    }
+  })
+
+  const minX = Math.min(...projected.map((point) => point.minX))
+  const maxX = Math.max(...projected.map((point) => point.maxX))
+  const minY = Math.min(...projected.map((point) => point.minY))
+  const maxY = Math.max(...projected.map((point) => point.maxY))
+
+  return {
+    minX,
+    maxX,
+    minY,
+    maxY,
+    width: maxX - minX,
+    height: maxY - minY,
+  }
+}
+
+function getCameraForBounds(
+  graph: LiveChainGraphModel,
+  nodes: LiveChainNode[],
+  options?: {
+    minZoom?: number
+    maxZoom?: number
+    padding?: number
+    preferZoom?: number
+  }
+): LiveCamera {
+  const minZoom = options?.minZoom ?? 0.74
+  const maxZoom = options?.maxZoom ?? 2.4
+  const padding = options?.padding ?? 80
+  const bounds = getLiveGraphBounds(nodes)
+
+  if (nodes.length === 0 || bounds.width <= 0 || bounds.height <= 0) {
+    return {
+      zoom: 1,
+      panX: 0,
+      panY: 0,
+    }
+  }
+
+  const fitZoom = Math.min(
+    (graph.width - padding * 2) / bounds.width,
+    (graph.height - padding * 2) / bounds.height
+  )
+  const zoom = clampNumber(options?.preferZoom ?? fitZoom, minZoom, maxZoom)
+
+  return {
+    zoom,
+    panX: (graph.width - bounds.width * zoom) / 2 - bounds.minX * zoom,
+    panY: (graph.height - bounds.height * zoom) / 2 - bounds.minY * zoom,
+  }
+}
+
+function useThrottledValue<T>(value: T, intervalMs: number) {
+  const [throttledValue, setThrottledValue] = useState(value)
+  const latestValueRef = useRef(value)
+  const lastAppliedRef = useRef(0)
+  const timeoutRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    latestValueRef.current = value
+    const flush = () => {
+      lastAppliedRef.current = Date.now()
+      timeoutRef.current = null
+      setThrottledValue(latestValueRef.current)
+    }
+
+    const remaining = intervalMs - (Date.now() - lastAppliedRef.current)
+    if (lastAppliedRef.current === 0 || remaining <= 0) {
+      if (timeoutRef.current != null) {
+        window.clearTimeout(timeoutRef.current)
+        timeoutRef.current = null
+      }
+      flush()
+      return
+    }
+
+    if (timeoutRef.current == null) {
+      timeoutRef.current = window.setTimeout(flush, remaining)
+    }
+  }, [intervalMs, value])
+
+  useEffect(
+    () => () => {
+      if (timeoutRef.current != null) {
+        window.clearTimeout(timeoutRef.current)
+      }
+    },
+    []
+  )
+
+  return throttledValue
+}
+
+const DEFAULT_STREAM_STATUS: ExplorerStreamStatus = {
+  state: 'connecting',
+  source: 'wrpc',
+  label: 'Starting live feed',
+  detail: 'Opening the live Kaspa chain stream.',
 }
 
 function getTxView(transaction: Transaction, subjectAddress: string) {
@@ -288,7 +436,7 @@ function Card({
   children: ReactNode
 }) {
   return (
-    <div className="self-start rounded-2xl border border-border bg-card/80 p-4 sm:p-5">
+    <div className="min-w-0 self-start overflow-hidden rounded-2xl border border-border bg-card/80 p-4 sm:p-5">
       <div className="mb-4 flex items-start justify-between gap-3">
         <div className="min-w-0">
           <h2 className="text-base font-semibold sm:text-lg">{title}</h2>
@@ -386,173 +534,519 @@ function LiveChainView({
   tipHashes,
   isRefreshing,
   lastUpdatedAt,
+  streamStatus,
   onSelect,
 }: {
   blocks: ExplorerBlock[]
   tipHashes: string[]
   isRefreshing: boolean
   lastUpdatedAt: number | null
+  streamStatus: ExplorerStreamStatus
   onSelect: (blockHash: string) => void
 }) {
-  const graph = useMemo(() => buildLiveChainGraph(blocks, tipHashes), [blocks, tipHashes])
+  const livePayload = useMemo(() => ({ blocks, tipHashes }), [blocks, tipHashes])
+  const stagedLivePayload = useThrottledValue(livePayload, 900)
+  const graph = useMemo(
+    () => buildLiveChainGraph(stagedLivePayload.blocks, stagedLivePayload.tipHashes),
+    [stagedLivePayload]
+  )
   const nodeLookup = useMemo(() => new Map(graph.nodes.map((node) => [node.block.hash, node])), [graph.nodes])
+  const tipNodes = useMemo(() => graph.nodes.filter((node) => node.isTip), [graph.nodes])
   const tipBlocks = useMemo(
     () =>
-      blocks
-        .filter((block) => tipHashes.includes(block.hash))
+      stagedLivePayload.blocks
+        .filter((block) => stagedLivePayload.tipHashes.includes(block.hash))
         .sort((left, right) => right.blueScore - left.blueScore || right.timestamp - left.timestamp)
         .slice(0, 6),
-    [blocks, tipHashes]
+    [stagedLivePayload]
   )
+  const overviewCamera = useMemo(
+    () => getCameraForBounds(graph, graph.nodes, { minZoom: 0.72, maxZoom: 1.24, padding: 88 }),
+    [graph]
+  )
+  const tipCamera = useMemo(
+    () =>
+      getCameraForBounds(graph, tipNodes.length > 0 ? tipNodes : graph.nodes, {
+        minZoom: 0.82,
+        maxZoom: 2.3,
+        padding: 110,
+      }),
+    [graph, tipNodes]
+  )
+  const [camera, setCamera] = useState<LiveCamera>(overviewCamera)
+  const [isPanning, setIsPanning] = useState(false)
+  const [hoveredHash, setHoveredHash] = useState<string | null>(null)
+  const svgRef = useRef<SVGSVGElement | null>(null)
+  const stageViewportRef = useRef<HTMLDivElement | null>(null)
+  const cameraInitializedRef = useRef(false)
+  const dragStateRef = useRef<{ pointerId: number; lastPoint: { x: number; y: number } } | null>(null)
+  const hoveredNode = useMemo(() => (hoveredHash ? nodeLookup.get(hoveredHash) ?? null : null), [hoveredHash, nodeLookup])
+  const streamBadgeClass =
+    streamStatus.state === 'streaming'
+      ? 'border-emerald-400/20 bg-emerald-500/10 text-emerald-100'
+      : streamStatus.state === 'error'
+        ? 'border-red-400/20 bg-red-500/10 text-red-100'
+        : 'border-cyan-400/20 bg-cyan-500/10 text-cyan-100'
+  const cameraButtonClass =
+    'inline-flex h-10 min-w-10 items-center justify-center rounded-xl border border-white/10 bg-slate-950/78 px-3 text-xs font-medium text-slate-100 transition-colors hover:bg-slate-900/88'
+
+  const getSvgPoint = useCallback((clientX: number, clientY: number) => {
+    const svg = svgRef.current
+    if (!svg) return null
+    const matrix = svg.getScreenCTM()
+    if (!matrix) return null
+    const point = svg.createSVGPoint()
+    point.x = clientX
+    point.y = clientY
+    const transformed = point.matrixTransform(matrix.inverse())
+    return {
+      x: transformed.x,
+      y: transformed.y,
+    }
+  }, [])
+
+  const zoomAroundPoint = useCallback((nextZoom: number, anchor?: { x: number; y: number }) => {
+    setCamera((current) => {
+      const zoom = clampNumber(nextZoom, 0.72, 2.4)
+      if (Math.abs(zoom - current.zoom) < 0.001) return current
+      const focus = anchor ?? { x: graph.width / 2, y: graph.height / 2 }
+      return {
+        zoom,
+        panX: focus.x - ((focus.x - current.panX) / current.zoom) * zoom,
+        panY: focus.y - ((focus.y - current.panY) / current.zoom) * zoom,
+      }
+    })
+  }, [graph.height, graph.width])
+
+  const resetOverview = useCallback(() => {
+    setCamera(overviewCamera)
+  }, [overviewCamera])
+
+  const focusTips = useCallback(() => {
+    setCamera(tipCamera)
+  }, [tipCamera])
+
+  const handleWheel = useCallback((event: WheelEvent) => {
+    event.preventDefault()
+    const anchor = getSvgPoint(event.clientX, event.clientY) ?? { x: graph.width / 2, y: graph.height / 2 }
+    const factor = Math.exp(-event.deltaY * 0.0014)
+    setCamera((current) => {
+      const zoom = clampNumber(current.zoom * factor, 0.72, 2.4)
+      if (Math.abs(zoom - current.zoom) < 0.001) return current
+      return {
+        zoom,
+        panX: anchor.x - ((anchor.x - current.panX) / current.zoom) * zoom,
+        panY: anchor.y - ((anchor.y - current.panY) / current.zoom) * zoom,
+      }
+    })
+  }, [getSvgPoint, graph.height, graph.width])
+
+  const handlePointerDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) return
+    const target = event.target as Element | null
+    if (target?.closest('[data-live-node="true"]')) return
+    const point = getSvgPoint(event.clientX, event.clientY)
+    if (!point) return
+    dragStateRef.current = {
+      pointerId: event.pointerId,
+      lastPoint: point,
+    }
+    setIsPanning(true)
+    event.currentTarget.setPointerCapture(event.pointerId)
+  }, [getSvgPoint])
+
+  const handlePointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const dragState = dragStateRef.current
+    if (!dragState || dragState.pointerId !== event.pointerId) return
+    const point = getSvgPoint(event.clientX, event.clientY)
+    if (!point) return
+
+    const deltaX = point.x - dragState.lastPoint.x
+    const deltaY = point.y - dragState.lastPoint.y
+    dragState.lastPoint = point
+
+    setCamera((current) => ({
+      ...current,
+      panX: current.panX + deltaX,
+      panY: current.panY + deltaY,
+    }))
+  }, [getSvgPoint])
+
+  const handlePointerUp = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (dragStateRef.current?.pointerId !== event.pointerId) return
+    dragStateRef.current = null
+    setIsPanning(false)
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (graph.nodes.length === 0) {
+      cameraInitializedRef.current = false
+      setCamera({
+        zoom: 1,
+        panX: 0,
+        panY: 0,
+      })
+      return
+    }
+
+    if (!cameraInitializedRef.current) {
+      setCamera(overviewCamera)
+      cameraInitializedRef.current = true
+    }
+  }, [graph.nodes.length, overviewCamera])
+
+  useEffect(() => {
+    if (hoveredHash && !nodeLookup.has(hoveredHash)) {
+      setHoveredHash(null)
+    }
+  }, [hoveredHash, nodeLookup])
+
+  useEffect(() => {
+    const viewport = stageViewportRef.current
+    if (!viewport) return
+
+    const listener = (event: WheelEvent) => {
+      handleWheel(event)
+    }
+
+    viewport.addEventListener('wheel', listener, { passive: false })
+    return () => {
+      viewport.removeEventListener('wheel', listener)
+    }
+  }, [handleWheel])
 
   if (graph.nodes.length === 0) {
     return (
-      <div className="flex h-[420px] items-center justify-center rounded-2xl border border-border bg-slate-950/50 text-sm text-muted-foreground">
-        Waiting for live chain data.
+      <div className="relative overflow-hidden rounded-[28px] border border-cyan-500/15 bg-[#020617]">
+        <div
+          className="pointer-events-none absolute inset-0 opacity-60"
+          style={{
+            backgroundImage:
+              'radial-gradient(circle at 18% 20%, rgba(6,182,212,0.18), transparent 28%), radial-gradient(circle at 82% 14%, rgba(99,102,241,0.16), transparent 26%), linear-gradient(rgba(15,23,42,0.65), rgba(2,6,23,0.92)), linear-gradient(rgba(8,47,73,0.18) 1px, transparent 1px), linear-gradient(90deg, rgba(8,47,73,0.18) 1px, transparent 1px))',
+            backgroundSize: 'auto, auto, auto, 36px 36px, 36px 36px',
+          }}
+        />
+        <div className="relative flex h-[320px] flex-col items-center justify-center gap-3 p-6 text-center sm:h-[360px] xl:h-[400px]">
+          <div className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs ${streamBadgeClass}`}>
+            <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
+            <span>{streamStatus.label}</span>
+          </div>
+          <p className="max-w-md text-sm text-slate-300">{streamStatus.detail || 'Waiting for the live Kaspa stream to deliver chain data.'}</p>
+        </div>
       </div>
     )
   }
 
   return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <div className="rounded-xl border border-border bg-muted/20 p-3">
-          <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Visible Blocks</p>
-          <p className="mt-2 text-xl font-semibold">{graph.nodes.length}</p>
+    <div className="min-w-0 space-y-4">
+      <div className="grid min-w-0 grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <div className="rounded-2xl border border-cyan-500/15 bg-slate-950/70 p-3 backdrop-blur-sm">
+          <p className="text-[11px] uppercase tracking-[0.22em] text-slate-400">Visible Blocks</p>
+          <p className="mt-2 text-xl font-semibold text-cyan-50">{graph.nodes.length}</p>
         </div>
-        <div className="rounded-xl border border-border bg-muted/20 p-3">
-          <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Active Tips</p>
-          <p className="mt-2 text-xl font-semibold">{graph.tipCount}</p>
+        <div className="rounded-2xl border border-emerald-500/15 bg-slate-950/70 p-3 backdrop-blur-sm">
+          <p className="text-[11px] uppercase tracking-[0.22em] text-slate-400">Active Tips</p>
+          <p className="mt-2 text-xl font-semibold text-emerald-50">{graph.tipCount}</p>
         </div>
-        <div className="rounded-xl border border-border bg-muted/20 p-3">
-          <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Main Chain Depth</p>
-          <p className="mt-2 text-xl font-semibold">{graph.mainChainCount}</p>
+        <div className="rounded-2xl border border-indigo-500/15 bg-slate-950/70 p-3 backdrop-blur-sm">
+          <p className="text-[11px] uppercase tracking-[0.22em] text-slate-400">Main Chain Depth</p>
+          <p className="mt-2 text-xl font-semibold text-indigo-50">{graph.mainChainCount}</p>
         </div>
-        <div className="rounded-xl border border-border bg-muted/20 p-3">
-          <p className="text-xs uppercase tracking-[0.16em] text-muted-foreground">Live Update</p>
-          <p className="mt-2 text-xl font-semibold">{lastUpdatedAt ? fmtAgo(lastUpdatedAt) : 'Loading'}</p>
+        <div className="rounded-2xl border border-fuchsia-500/15 bg-slate-950/70 p-3 backdrop-blur-sm">
+          <p className="text-[11px] uppercase tracking-[0.22em] text-slate-400">Last Event</p>
+          <p className="mt-2 text-xl font-semibold text-fuchsia-50">{lastUpdatedAt ? fmtAgo(lastUpdatedAt) : 'Loading'}</p>
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center gap-3 text-xs text-muted-foreground">
-        <span className="inline-flex items-center gap-2">
-          <span className="h-2.5 w-2.5 rounded-full bg-cyan-400" />
-          selected chain
-        </span>
-        <span className="inline-flex items-center gap-2">
-          <span className="h-2.5 w-2.5 rounded-full bg-emerald-400" />
-          live tip
-        </span>
-        <span className="inline-flex items-center gap-2">
-          <span className="h-2.5 w-2.5 rounded-full bg-amber-400" />
-          side branch
-        </span>
-        <span className="inline-flex items-center gap-2">
-          <RefreshCw className={`h-3.5 w-3.5 ${isRefreshing ? 'animate-spin' : ''}`} />
-          auto-refresh every 12s
-        </span>
+      <div className="flex min-w-0 flex-col gap-3 xl:flex-row xl:items-center xl:justify-between">
+        <div className="flex flex-wrap items-center gap-3 text-xs text-slate-400">
+          <span className="inline-flex items-center gap-2">
+            <span className="h-2.5 w-2.5 rounded-full bg-cyan-300 shadow-[0_0_14px_rgba(34,211,238,0.7)]" />
+            selected chain
+          </span>
+          <span className="inline-flex items-center gap-2">
+            <span className="h-2.5 w-2.5 rounded-full bg-emerald-300 shadow-[0_0_14px_rgba(52,211,153,0.7)]" />
+            live tip
+          </span>
+          <span className="inline-flex items-center gap-2">
+            <span className="h-2.5 w-2.5 rounded-full bg-amber-300 shadow-[0_0_14px_rgba(251,191,36,0.6)]" />
+            side branch
+          </span>
+          <span className="inline-flex items-center gap-2">
+            <span className="h-2.5 w-2.5 rounded-full bg-fuchsia-300 shadow-[0_0_14px_rgba(244,114,182,0.6)]" />
+            depth shadow
+          </span>
+        </div>
+
+        <div className={`inline-flex min-w-0 items-center gap-2 rounded-full border px-3 py-1.5 text-xs ${streamBadgeClass}`}>
+          <RefreshCw className={`h-3.5 w-3.5 shrink-0 ${isRefreshing ? 'animate-spin' : ''}`} />
+          <span className="truncate">{streamStatus.label}</span>
+          <span className="hidden truncate text-slate-300/80 sm:inline">| {streamStatus.detail}</span>
+        </div>
       </div>
 
-      <div className="overflow-x-auto rounded-2xl border border-border bg-slate-950/60 p-3 sm:p-4">
-        <svg viewBox={`0 0 ${graph.width} ${graph.height}`} className="h-[280px] min-w-full sm:h-[340px] lg:h-[380px]">
-          <defs>
-            <linearGradient id="live-chain-bg" x1="0" x2="1" y1="0" y2="1">
-              <stop offset="0%" stopColor="rgba(14,116,144,0.08)" />
-              <stop offset="100%" stopColor="rgba(30,64,175,0.02)" />
-            </linearGradient>
-          </defs>
-          <rect x="0" y="0" width={graph.width} height={graph.height} fill="url(#live-chain-bg)" rx="20" />
-          <line
-            x1="40"
-            x2={graph.width - 40}
-            y1={graph.height / 2}
-            y2={graph.height / 2}
-            stroke="rgba(148,163,184,0.12)"
-            strokeDasharray="6 6"
-          />
+      <div className="relative min-w-0 overflow-hidden rounded-[28px] border border-cyan-500/15 bg-[#020617] shadow-[0_0_0_1px_rgba(6,182,212,0.06),0_24px_80px_rgba(2,6,23,0.45)]">
+        <div
+          className="pointer-events-none absolute inset-0 opacity-70"
+          style={{
+            backgroundImage:
+              'radial-gradient(circle at 14% 18%, rgba(6,182,212,0.22), transparent 30%), radial-gradient(circle at 84% 12%, rgba(99,102,241,0.2), transparent 24%), radial-gradient(circle at 74% 72%, rgba(217,70,239,0.12), transparent 22%), linear-gradient(rgba(15,23,42,0.72), rgba(2,6,23,0.94)), linear-gradient(rgba(8,47,73,0.2) 1px, transparent 1px), linear-gradient(90deg, rgba(8,47,73,0.2) 1px, transparent 1px))',
+            backgroundSize: 'auto, auto, auto, auto, 34px 34px, 34px 34px',
+          }}
+        />
+        <div className="pointer-events-none absolute inset-x-0 top-0 h-24 bg-gradient-to-b from-cyan-400/10 via-cyan-300/5 to-transparent" />
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-20 bg-gradient-to-t from-slate-950/70 to-transparent" />
+        <motion.div
+          className="pointer-events-none absolute inset-y-10 left-[-14%] right-[-14%] rounded-full bg-[radial-gradient(circle_at_center,rgba(56,189,248,0.12),transparent_58%)] blur-3xl"
+          animate={{ x: ['-2%', '5%', '-2%'], opacity: [0.18, 0.32, 0.18] }}
+          transition={{ duration: 18, ease: 'easeInOut', repeat: Infinity }}
+        />
+        <div className="pointer-events-none absolute left-4 top-4 rounded-full border border-cyan-400/20 bg-slate-950/75 px-3 py-1 text-[10px] uppercase tracking-[0.28em] text-cyan-200">
+          Interactive Holographic DAG
+        </div>
+        <div className="pointer-events-none absolute right-4 top-4 hidden rounded-full border border-white/10 bg-slate-950/70 px-3 py-1 text-[10px] uppercase tracking-[0.22em] text-slate-300 sm:block">
+          {streamStatus.host ? `${streamStatus.host}${streamStatus.serverVersion ? ` | v${streamStatus.serverVersion}` : ''}` : streamStatus.source}
+        </div>
 
-          {graph.edges.map((edge) => {
-            const parentNode = nodeLookup.get(edge.parentHash)
-            const childNode = nodeLookup.get(edge.childHash)
-            if (!parentNode || !childNode) return null
+        <div
+          ref={stageViewportRef}
+          className={`relative h-[320px] w-full min-w-0 touch-none select-none sm:h-[360px] xl:h-[400px] ${isPanning ? 'cursor-grabbing' : 'cursor-grab'}`}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+          onPointerCancel={handlePointerUp}
+          onPointerLeave={handlePointerUp}
+        >
+          <div className="absolute right-4 top-14 z-10 flex flex-wrap items-center justify-end gap-2">
+            <button type="button" onClick={() => zoomAroundPoint(camera.zoom + 0.16)} className={cameraButtonClass} aria-label="Zoom in">
+              <Plus className="h-4 w-4" />
+            </button>
+            <button type="button" onClick={() => zoomAroundPoint(camera.zoom - 0.16)} className={cameraButtonClass} aria-label="Zoom out">
+              <Minus className="h-4 w-4" />
+            </button>
+            <button type="button" onClick={focusTips} className={`${cameraButtonClass} gap-2`}>
+              <LocateFixed className="h-4 w-4" />
+              <span className="hidden sm:inline">Tips</span>
+            </button>
+            <button type="button" onClick={resetOverview} className={`${cameraButtonClass} gap-2`}>
+              <RotateCcw className="h-4 w-4" />
+              <span className="hidden sm:inline">Overview</span>
+            </button>
+          </div>
 
-            const controlX = (parentNode.x + childNode.x) / 2
-            const path = `M ${parentNode.x} ${parentNode.y} C ${controlX} ${parentNode.y}, ${controlX} ${childNode.y}, ${childNode.x} ${childNode.y}`
+          <div className="pointer-events-none absolute bottom-4 left-4 z-10 max-w-[calc(100%-8rem)] rounded-2xl border border-white/10 bg-slate-950/72 px-4 py-3 backdrop-blur-sm">
+            <div className="flex flex-wrap items-center gap-2 text-[11px] uppercase tracking-[0.2em] text-slate-400">
+              <span className="inline-flex items-center gap-2">
+                <Move className="h-3.5 w-3.5" />
+                Drag to pan
+              </span>
+              <span>Wheel to zoom</span>
+              <span>{Math.round(camera.zoom * 100)}% view</span>
+            </div>
+            {hoveredNode ? (
+              <div className="mt-2 space-y-1 text-xs text-slate-200">
+                <p className="font-mono text-[11px] text-cyan-100">{formatAddress(hoveredNode.block.hash, 14)}</p>
+                <div className="flex flex-wrap gap-x-3 gap-y-1 text-slate-300">
+                  <span>{hoveredNode.block.transactionCount} txs</span>
+                  <span>blue {fmtCompact(hoveredNode.block.blueScore, 1)}</span>
+                  <span>{hoveredNode.isTip ? 'live tip' : hoveredNode.isMainChain ? 'selected chain' : 'branch node'}</span>
+                </div>
+              </div>
+            ) : (
+              <p className="mt-2 text-xs text-slate-300">Hover a node for quick telemetry, or click one to open block details.</p>
+            )}
+          </div>
 
-            return (
-              <path
-                key={`${edge.parentHash}-${edge.childHash}`}
-                d={path}
-                fill="none"
-                stroke={edge.isMainChain ? 'rgba(34,211,238,0.9)' : 'rgba(245,158,11,0.55)'}
-                strokeWidth={edge.isMainChain ? 3.2 : 2}
-                strokeLinecap="round"
-              />
-            )
-          })}
+          <svg ref={svgRef} viewBox={`0 0 ${graph.width} ${graph.height}`} className="h-full w-full" preserveAspectRatio="xMidYMid meet">
+            <defs>
+              <filter id="live-node-glow" x="-80%" y="-80%" width="260%" height="260%">
+                <feGaussianBlur stdDeviation="9" result="blur" />
+                <feMerge>
+                  <feMergeNode in="blur" />
+                  <feMergeNode in="SourceGraphic" />
+                </feMerge>
+              </filter>
+              <filter id="live-edge-glow" x="-40%" y="-40%" width="180%" height="180%">
+                <feGaussianBlur stdDeviation="4" />
+              </filter>
+              <linearGradient id="main-edge-gradient" x1="0" x2="1" y1="0" y2="0">
+                <stop offset="0%" stopColor="rgba(56,189,248,0.2)" />
+                <stop offset="48%" stopColor="rgba(34,211,238,0.94)" />
+                <stop offset="100%" stopColor="rgba(59,130,246,0.28)" />
+              </linearGradient>
+              <linearGradient id="branch-edge-gradient" x1="0" x2="1" y1="0" y2="0">
+                <stop offset="0%" stopColor="rgba(251,191,36,0.16)" />
+                <stop offset="50%" stopColor="rgba(251,191,36,0.72)" />
+                <stop offset="100%" stopColor="rgba(217,119,6,0.16)" />
+              </linearGradient>
+              <radialGradient id="main-node-gradient">
+                <stop offset="0%" stopColor="rgba(186,230,253,1)" />
+                <stop offset="55%" stopColor="rgba(34,211,238,0.92)" />
+                <stop offset="100%" stopColor="rgba(14,165,233,0.75)" />
+              </radialGradient>
+              <radialGradient id="tip-node-gradient">
+                <stop offset="0%" stopColor="rgba(220,252,231,1)" />
+                <stop offset="55%" stopColor="rgba(52,211,153,0.95)" />
+                <stop offset="100%" stopColor="rgba(16,185,129,0.78)" />
+              </radialGradient>
+              <radialGradient id="branch-node-gradient">
+                <stop offset="0%" stopColor="rgba(254,249,195,1)" />
+                <stop offset="55%" stopColor="rgba(251,191,36,0.92)" />
+                <stop offset="100%" stopColor="rgba(245,158,11,0.78)" />
+              </radialGradient>
+            </defs>
 
-          {graph.nodes.map((node) => {
-            const extraParents = Math.max(node.block.parentHashes.length - 1, 0)
-            const fill = node.isTip
-              ? 'rgb(52,211,153)'
-              : node.isMainChain
-                ? 'rgb(34,211,238)'
-                : 'rgb(251,191,36)'
-            const stroke = node.isMainChain ? 'rgba(125,211,252,0.95)' : 'rgba(254,240,138,0.85)'
+            <rect x="24" y="24" width={graph.width - 48} height={graph.height - 48} rx="30" fill="rgba(2,6,23,0.26)" stroke="rgba(34,211,238,0.08)" />
+            <g>
+              <g transform={`translate(${camera.panX} ${camera.panY})`}>
+                <g transform={`scale(${camera.zoom})`}>
+                  {[-2, -1, 0, 1, 2].map((lane) => (
+                    <path
+                      key={`lane-${lane}`}
+                      d={`M 60 ${graph.height / 2 + lane * 58} Q ${graph.width / 2} ${graph.height / 2 + lane * 22} ${graph.width - 60} ${graph.height / 2 + lane * 58}`}
+                      fill="none"
+                      stroke={lane === 0 ? 'rgba(34,211,238,0.2)' : 'rgba(148,163,184,0.08)'}
+                      strokeWidth={lane === 0 ? 2.2 : 1.2}
+                      strokeDasharray={lane === 0 ? '8 8' : '5 8'}
+                    />
+                  ))}
 
-            return (
-              <g key={node.block.hash} onClick={() => onSelect(node.block.hash)} className="cursor-pointer">
-                {node.isTip && (
-                  <circle
-                    cx={node.x}
-                    cy={node.y}
-                    r={node.radius + 4}
-                    fill="none"
-                    stroke="rgba(16,185,129,0.7)"
-                    strokeWidth="2"
-                  >
-                    <animate attributeName="r" values={`${node.radius + 4};${node.radius + 12};${node.radius + 4}`} dur="2.2s" repeatCount="indefinite" />
-                    <animate attributeName="opacity" values="0.55;0.12;0.55" dur="2.2s" repeatCount="indefinite" />
-                  </circle>
-                )}
-                <circle cx={node.x} cy={node.y} r={node.radius} fill={fill} stroke={stroke} strokeWidth="2.4" />
-                <text
-                  x={node.x}
-                  y={node.y - node.radius - 12}
-                  textAnchor="middle"
-                  fill="rgba(226,232,240,0.92)"
-                  fontSize="11"
-                  fontFamily="monospace"
-                >
-                  {formatAddress(node.block.hash, 14)}
-                </text>
-                <text
-                  x={node.x}
-                  y={node.y + node.radius + 16}
-                  textAnchor="middle"
-                  fill="rgba(148,163,184,0.88)"
-                  fontSize="10"
-                >
-                  {node.block.transactionCount} tx
-                </text>
-                {extraParents > 0 && (
-                  <text
-                    x={node.x + node.radius + 10}
-                    y={node.y - node.radius - 2}
-                    textAnchor="start"
-                    fill="rgba(253,224,71,0.9)"
-                    fontSize="10"
-                  >
-                    +{extraParents}
-                  </text>
-                )}
+                  {graph.edges.map((edge) => {
+                    const parentNode = nodeLookup.get(edge.parentHash)
+                    const childNode = nodeLookup.get(edge.childHash)
+                    if (!parentNode || !childNode) return null
+
+                    const parentPoint = projectLiveNode(parentNode)
+                    const childPoint = projectLiveNode(childNode)
+                    const controlX = (parentPoint.x + childPoint.x) / 2
+                    const controlY1 = parentPoint.y - (edge.isMainChain ? 22 : 10)
+                    const controlY2 = childPoint.y + (edge.isMainChain ? 26 : 12)
+                    const path = `M ${parentPoint.x} ${parentPoint.y} C ${controlX} ${controlY1}, ${controlX} ${controlY2}, ${childPoint.x} ${childPoint.y}`
+
+                    return (
+                      <g key={`${edge.parentHash}-${edge.childHash}`}>
+                        <path
+                          d={path}
+                          fill="none"
+                          stroke={edge.isMainChain ? 'rgba(34,211,238,0.24)' : 'rgba(251,191,36,0.18)'}
+                          strokeWidth={edge.isMainChain ? 8 : 6}
+                          filter="url(#live-edge-glow)"
+                        />
+                        <path
+                          d={path}
+                          fill="none"
+                          stroke={edge.isMainChain ? 'url(#main-edge-gradient)' : 'url(#branch-edge-gradient)'}
+                          strokeWidth={edge.isMainChain ? 2.8 : 2}
+                          strokeLinecap="round"
+                          strokeDasharray={edge.isMainChain ? undefined : '6 5'}
+                        />
+                      </g>
+                    )
+                  })}
+
+                  {graph.nodes.map((node) => {
+                    const point = projectLiveNode(node)
+                    const extraParents = Math.max(node.block.parentHashes.length - 1, 0)
+                    const fill = node.isTip
+                      ? 'url(#tip-node-gradient)'
+                      : node.isMainChain
+                        ? 'url(#main-node-gradient)'
+                        : 'url(#branch-node-gradient)'
+                    const stroke = node.isTip
+                      ? 'rgba(167,243,208,0.95)'
+                      : node.isMainChain
+                        ? 'rgba(125,211,252,0.95)'
+                        : 'rgba(253,224,71,0.95)'
+                    const label = formatAddress(node.block.hash, 12)
+                    const labelWidth = Math.max(76, label.length * 6.6)
+
+                    return (
+                      <g
+                        key={node.block.hash}
+                        data-live-node="true"
+                        onClick={() => onSelect(node.block.hash)}
+                        onMouseEnter={() => setHoveredHash(node.block.hash)}
+                        onMouseLeave={() => setHoveredHash((current) => (current === node.block.hash ? null : current))}
+                        className="cursor-pointer"
+                      >
+                        <ellipse
+                          cx={point.x}
+                          cy={point.shadowY}
+                          rx={node.radius + 9}
+                          ry={5.5}
+                          fill={node.isMainChain ? 'rgba(34,211,238,0.16)' : 'rgba(244,114,182,0.14)'}
+                        />
+                        {node.isTip && (
+                          <circle
+                            cx={point.x}
+                            cy={point.y}
+                            r={node.radius + 5}
+                            fill="none"
+                            stroke="rgba(52,211,153,0.62)"
+                            strokeWidth="2"
+                          >
+                            <animate attributeName="r" values={`${node.radius + 5};${node.radius + 13};${node.radius + 5}`} dur="4.6s" repeatCount="indefinite" />
+                            <animate attributeName="opacity" values="0.36;0.12;0.36" dur="4.6s" repeatCount="indefinite" />
+                          </circle>
+                        )}
+                        <rect
+                          x={point.x - node.radius * 0.86}
+                          y={point.y - node.radius * 0.86}
+                          width={node.radius * 1.72}
+                          height={node.radius * 1.72}
+                          rx="5"
+                          fill="rgba(15,23,42,0.9)"
+                          stroke={stroke}
+                          strokeWidth="1.3"
+                          transform={`rotate(45 ${point.x} ${point.y})`}
+                          filter="url(#live-node-glow)"
+                        />
+                        <circle cx={point.x} cy={point.y} r={node.radius} fill={fill} stroke={stroke} strokeWidth="2.4" filter="url(#live-node-glow)" />
+                        <rect
+                          x={point.x - labelWidth / 2}
+                          y={point.y - node.radius - 25}
+                          width={labelWidth}
+                          height="18"
+                          rx="9"
+                          fill="rgba(2,6,23,0.78)"
+                          stroke={node.isMainChain ? 'rgba(34,211,238,0.18)' : 'rgba(148,163,184,0.14)'}
+                        />
+                        <text x={point.x} y={point.y - node.radius - 12.5} textAnchor="middle" fill="rgba(224,242,254,0.96)" fontSize="11" fontFamily="monospace">
+                          {label}
+                        </text>
+                        <text x={point.x} y={point.y + node.radius + 18} textAnchor="middle" fill="rgba(148,163,184,0.86)" fontSize="10">
+                          {node.block.transactionCount} tx
+                        </text>
+                        {extraParents > 0 && (
+                          <>
+                            <rect
+                              x={point.x + node.radius + 8}
+                              y={point.y - node.radius - 14}
+                              width="22"
+                              height="14"
+                              rx="7"
+                              fill="rgba(251,191,36,0.14)"
+                              stroke="rgba(251,191,36,0.35)"
+                            />
+                            <text x={point.x + node.radius + 19} y={point.y - node.radius - 4} textAnchor="middle" fill="rgba(253,230,138,0.95)" fontSize="9.5">
+                              +{extraParents}
+                            </text>
+                          </>
+                        )}
+                      </g>
+                    )
+                  })}
+                </g>
               </g>
-            )
-          })}
-        </svg>
+            </g>
+          </svg>
+        </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-3 lg:grid-cols-3">
+      <div className="grid min-w-0 grid-cols-1 gap-3 lg:grid-cols-3">
         {tipBlocks.length === 0 ? (
           <div className="rounded-xl border border-border bg-muted/20 p-4 text-sm text-muted-foreground lg:col-span-3">
             No live tip blocks available.
@@ -562,16 +1056,16 @@ function LiveChainView({
             <button
               key={block.hash}
               onClick={() => onSelect(block.hash)}
-              className="rounded-xl border border-border bg-muted/20 p-4 text-left transition-colors hover:bg-muted/35"
+              className="min-w-0 rounded-2xl border border-white/10 bg-white/5 p-4 text-left transition-colors hover:bg-white/10"
             >
               <div className="flex items-center justify-between gap-3">
-                <span className="text-xs uppercase tracking-[0.18em] text-emerald-400">Live Tip</span>
-                <span className="rounded-full bg-emerald-500/10 px-2 py-1 text-[10px] font-medium text-emerald-300">
+                <span className="text-xs uppercase tracking-[0.18em] text-emerald-300">Live Tip</span>
+                <span className="rounded-full border border-emerald-400/15 bg-emerald-500/10 px-2 py-1 text-[10px] font-medium text-emerald-200">
                   blue {fmtCompact(block.blueScore, 1)}
                 </span>
               </div>
-              <p className="mt-3 break-all font-mono text-xs sm:text-sm">{block.hash}</p>
-              <div className="mt-3 flex flex-col gap-1 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between">
+              <p className="mt-3 break-all font-mono text-xs text-cyan-100 sm:text-sm">{block.hash}</p>
+              <div className="mt-3 flex flex-col gap-1 text-xs text-slate-400 sm:flex-row sm:items-center sm:justify-between">
                 <span>{block.transactionCount} txs</span>
                 <span>{fmtAgo(block.timestamp)}</span>
               </div>
@@ -603,6 +1097,8 @@ export default function ExplorerPage() {
   const [richList, setRichList] = useState<ExplorerRichListEntry[]>([])
   const [recentBlocks, setRecentBlocks] = useState<ExplorerBlock[]>([])
   const [lastLiveChainUpdate, setLastLiveChainUpdate] = useState<number | null>(null)
+  const [streamStatus, setStreamStatus] = useState<ExplorerStreamStatus>(DEFAULT_STREAM_STATUS)
+  const liveStreamRef = useRef<ExplorerLiveStreamController | null>(null)
   const searchResultRef = useRef<HTMLDivElement | null>(null)
 
   const scrollToSearchResult = useCallback((behavior: ScrollBehavior = 'smooth') => {
@@ -616,26 +1112,6 @@ export default function ExplorerPage() {
     window.requestAnimationFrame(() => {
       searchResultRef.current?.focus({ preventScroll: true })
     })
-  }, [])
-
-  const refreshLiveChain = useCallback(async () => {
-    setIsRefreshingLiveChain(true)
-
-    const [dagResult, blocksResult, healthResult] = await Promise.allSettled([
-      kaspaAPI.getDagInfo(),
-      kaspaAPI.getRecentBlocks(18, true),
-      kaspaAPI.getHealth(),
-    ])
-
-    if (dagResult.status === 'fulfilled') setDagInfo(dagResult.value)
-    if (blocksResult.status === 'fulfilled') setRecentBlocks(blocksResult.value)
-    if (healthResult.status === 'fulfilled') setHealth(healthResult.value)
-
-    if (dagResult.status === 'fulfilled' || blocksResult.status === 'fulfilled') {
-      setLastLiveChainUpdate(Date.now())
-    }
-
-    setIsRefreshingLiveChain(false)
   }, [])
 
   const loadExplorerData = useCallback(async () => {
@@ -688,14 +1164,64 @@ export default function ExplorerPage() {
   }, [network, loadExplorerData])
 
   useEffect(() => {
-    const intervalId = window.setInterval(() => {
-      void refreshLiveChain()
-    }, 12000)
+    let isDisposed = false
+    const liveStream = kaspaAPI.createExplorerLiveStream({
+      onStatusChange: (status) => {
+        if (isDisposed) return
+        setStreamStatus(status)
+        setIsRefreshingLiveChain(status.state === 'connecting')
+      },
+      onUpdate: (update) => {
+        if (isDisposed) return
+
+        if (update.dagInfo) setDagInfo(update.dagInfo)
+        if (update.coinSupply) setCoinSupply(update.coinSupply)
+        if (update.health) {
+          const nextHealth = update.health
+          setHealth((previous) => (previous ? { ...previous, ...nextHealth } : nextHealth))
+        }
+        if (update.recentBlocks && update.recentBlocks.length > 0) {
+          setRecentBlocks(update.recentBlocks)
+        }
+
+        setLastLiveChainUpdate(update.at)
+        setIsRefreshingLiveChain(false)
+      },
+      onError: (error) => {
+        if (isDisposed) return
+        setIsRefreshingLiveChain(false)
+        setOverviewError((previous) => previous ?? error.message)
+      },
+    })
+
+    liveStreamRef.current = liveStream
+    setStreamStatus({
+      ...DEFAULT_STREAM_STATUS,
+      detail: `Opening a live Kaspa stream for ${network.name}.`,
+    })
+    setIsRefreshingLiveChain(true)
+
+    void liveStream.start().catch((error) => {
+      if (isDisposed) return
+      const message = error instanceof Error ? error.message : 'Live chain stream failed.'
+      setStreamStatus({
+        state: 'error',
+        source: 'wrpc',
+        label: 'Live feed unavailable',
+        detail: message,
+        lastEventAt: Date.now(),
+      })
+      setIsRefreshingLiveChain(false)
+    })
 
     return () => {
-      window.clearInterval(intervalId)
+      isDisposed = true
+      if (liveStreamRef.current === liveStream) {
+        liveStreamRef.current = null
+      }
+      void liveStream.stop()
     }
-  }, [network, refreshLiveChain])
+  }, [network])
 
   useEffect(() => {
     if (!searchResult) return
@@ -708,6 +1234,11 @@ export default function ExplorerPage() {
       window.cancelAnimationFrame(frameId)
     }
   }, [searchResult, scrollToSearchResult])
+
+  const recentBlockLookup = useMemo(
+    () => new Map(recentBlocks.map((block) => [block.hash, block])),
+    [recentBlocks]
+  )
 
   const runSearch = useCallback(async (rawQuery?: string) => {
     const query = (rawQuery ?? searchInput).trim()
@@ -744,12 +1275,19 @@ export default function ExplorerPage() {
       }
 
       if (isHexHash(query)) {
+        const cachedBlock = recentBlockLookup.get(query)
+
         try {
           const transaction = await kaspaAPI.getTransaction(query)
           setSearchResult({ kind: 'transaction', query, transaction })
           return
         } catch {
-          const block = await kaspaAPI.getBlock(query, true)
+          const block = await kaspaAPI.getBlock(query, true).catch((error) => {
+            if (cachedBlock) {
+              return cachedBlock
+            }
+            throw error
+          })
           setSearchResult({ kind: 'block', query, block })
           return
         }
@@ -763,7 +1301,7 @@ export default function ExplorerPage() {
     } finally {
       setIsSearching(false)
     }
-  }, [network, searchInput])
+  }, [network, recentBlockLookup, searchInput])
 
   const healthStatus = useMemo(() => {
     if (!health) return { label: 'Unknown', className: 'text-muted-foreground' }
@@ -803,7 +1341,18 @@ export default function ExplorerPage() {
           </form>
           <div className="grid w-full grid-cols-1 gap-2 sm:w-auto sm:grid-cols-[repeat(2,minmax(0,1fr))_auto] lg:flex lg:items-center">
             <Button variant="outline" className="w-full sm:w-auto" onClick={() => void runSearch(address)}><Wallet className="mr-2 h-4 w-4" />My Address</Button>
-            <Button variant="outline" className="w-full sm:w-auto" onClick={() => void loadExplorerData()} disabled={isLoadingOverview}><RefreshCw className={`mr-2 h-4 w-4 ${isLoadingOverview ? 'animate-spin' : ''}`} />Refresh Data</Button>
+            <Button
+              variant="outline"
+              className="w-full sm:w-auto"
+              onClick={() => {
+                void loadExplorerData()
+                void liveStreamRef.current?.refresh()
+              }}
+              disabled={isLoadingOverview}
+            >
+              <RefreshCw className={`mr-2 h-4 w-4 ${isLoadingOverview ? 'animate-spin' : ''}`} />
+              Refresh Data
+            </Button>
             <InfoPopover
               label="Search help"
               title="Search formats"
@@ -844,8 +1393,8 @@ export default function ExplorerPage() {
 
       <Card
         title="Live Chain Monitor"
-        subtitle="Auto-refreshing chain view built from live tip hashes and selected-parent relations."
-        info="The graph updates every 12 seconds. Cyan nodes belong to the selected chain, amber nodes are side branches, and green nodes are current live tips. Tap or click any node or tip card to open full block details."
+        subtitle="Event-driven DAG view streamed from Kaspa wRPC and projected into a stable sideways viewport."
+        info="The live monitor now stays inside a fixed viewport so new data cannot widen the layout. Cyan nodes belong to the selected chain, amber nodes are side branches, and green nodes are active live tips. Tap or click any node or tip card to open block details."
       >
         <div className="mb-4 flex items-center gap-2 text-sm text-cyan-300">
           <GitBranch className="h-4 w-4" />
@@ -856,6 +1405,7 @@ export default function ExplorerPage() {
           tipHashes={dagInfo?.tipHashes ?? []}
           isRefreshing={isRefreshingLiveChain}
           lastUpdatedAt={lastLiveChainUpdate}
+          streamStatus={streamStatus}
           onSelect={(blockHash) => {
             void runSearch(blockHash)
           }}
@@ -1044,3 +1594,4 @@ export default function ExplorerPage() {
     </div>
   )
 }
+

@@ -38,6 +38,8 @@ export default function Layout() {
     setNetwork,
     fetchBalance,
     fetchTransactions,
+    fetchKrc20Portfolio,
+    fetchKrc20Operations,
     address,
     wallet,
     selectedAccountId,
@@ -55,9 +57,11 @@ export default function Layout() {
     const interval = setInterval(() => {
       fetchBalance()
       fetchTransactions()
+      fetchKrc20Portfolio()
+      fetchKrc20Operations()
     }, 30000)
     return () => clearInterval(interval)
-  }, [fetchBalance, fetchTransactions])
+  }, [fetchBalance, fetchTransactions, fetchKrc20Portfolio, fetchKrc20Operations])
 
   useEffect(() => {
     if (!hasWallet || isLocked || autoLockMinutes <= 0) return
@@ -301,7 +305,12 @@ export default function Layout() {
             <span className="font-bold">Kaspa</span>
           </div>
           <button
-            onClick={fetchBalance}
+            onClick={() => {
+              fetchBalance()
+              fetchTransactions()
+              fetchKrc20Portfolio()
+              fetchKrc20Operations()
+            }}
             className="p-2 hover:bg-muted rounded-lg"
           >
             <RefreshCw className="w-5 h-5" />

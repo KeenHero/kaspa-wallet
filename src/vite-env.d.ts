@@ -12,6 +12,13 @@ interface KaspaDesktopBackupResult {
   filePath?: string
 }
 
+interface KaspaDesktopHttpResponse {
+  ok: boolean
+  status: number
+  body: string
+  contentType: string
+}
+
 interface Window {
   kaspaDesktop?: {
     isDesktop: boolean
@@ -26,5 +33,6 @@ interface Window {
     openWalletFolder?: () => Promise<void>
     backupWalletFile?: () => Promise<KaspaDesktopBackupResult>
     syncWalletFile?: (payload: string | null) => Promise<KaspaDesktopWalletFileInfo>
+    httpGet?: (url: string) => Promise<KaspaDesktopHttpResponse>
   }
 }

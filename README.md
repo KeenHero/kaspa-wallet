@@ -33,14 +33,23 @@ Active development. Use carefully and test with small amounts first.
 - Dynamic fee estimation using transaction mass when possible
 - Broadcast retry handling for transient RPC/network errors
 - Auto-lock inactivity timer with presets and custom minutes
+- KRC-20 portfolio support in the wallet dashboard
+- KRC-20 account activity feed in transaction history
+- Token metadata enrichment from Kasplex indexers when available
+- Desktop-safe KRC-20 fetch bridge through Electron main process
 - Integrated Kaspa explorer inside the wallet
-- Live chain monitor with DAG-style visualization of recent blocks and live tips
+- Live chain monitor streamed from Kaspa wRPC with DAG visualization
 - Explorer search for addresses, transaction hashes, and block hashes
 - Explorer result auto-scroll with jump-to-result helper
 - Responsive explorer layout for desktop and mobile
 - Explorer info popups for chain, block, transaction, and market data sections
 - Latest blocks, recent block flow, rich list, hashrate history, and address distribution views
 - Electron desktop packaging for Windows (NSIS target configured)
+
+Current KRC-20 scope:
+- Read-only balances and activity are supported now
+- KRC-20 send is intentionally not enabled yet
+- Token operations will only be broadcast after the exact KRC-20 transaction builder path is verified
 
 ## Security Model
 
@@ -68,6 +77,10 @@ Important:
 npm install -g @keenherox/kaspa-wallet
 kaspa-wallet
 ```
+
+Recommended for full feature access:
+- Use the Electron desktop app for wallet storage, explorer streaming, and KRC-20 support
+- The plain browser build is useful for development, but public Kasplex APIs block direct browser-origin requests
 
 ### If `kaspa-wallet` Is Not Recognized (Windows)
 
@@ -170,15 +183,19 @@ Notes:
 - Testnet 10 (`kaspatest`, `https://api-tn10.kaspa.org`)
 - Testnet 11 (`kaspatest`, `https://api-tn11.kaspa.org`)
 
+KRC-20 indexer support currently wired in:
+- Mainnet (`https://api.kasplex.org/v1`)
+- Testnet 10 (`https://tn10api.kasplex.org/v1`)
+
 ## Project Structure
 
 - `src/pages`: app screens (`Welcome`, `Unlock`, `Dashboard`, `Send`, `Receive`, `History`, `Explorer`, `Settings`)
 - `src/stores/walletStore.ts`: global wallet state and actions
 - `src/lib/wallet.ts`: wallet creation, key derivation, encryption/storage
-- `src/lib/kaspa.ts`: Kaspa REST API client, explorer data fetchers, and fee helpers
+- `src/lib/kaspa.ts`: Kaspa REST API client, explorer data fetchers, fee helpers, wRPC live stream, and KRC-20 indexer client
 - `src/lib/transaction.ts`: transaction construction/signing helpers
 - `electron/main.cjs`: Electron main process window/bootstrap
-- `electron/preload.cjs`: safe preload bridge
+- `electron/preload.cjs`: safe preload bridge for wallet file access and desktop KRC-20 fetches
 
 ## Common Issues
 
@@ -192,6 +209,13 @@ Notes:
 
 - `Invalid Kaspa address`:
   - Ensure address prefix matches selected network (`kaspa:` vs `kaspatest:`).
+
+- `KRC-20 data is currently available in the Electron desktop build only`:
+  - This is expected in the web renderer.
+  - Public Kasplex endpoints reject direct browser-origin requests, so the desktop app fetches KRC-20 data through Electron instead.
+
+- `No KRC-20 tokens detected`:
+  - The active account either has no indexed token balances yet, or the chosen network does not have matching KRC-20 indexer coverage.
 
 - `npm audit` shows unrelated vulnerabilities (for example `xlsx`) outside this package:
   - `@keenherox/kaspa-wallet` does not include `xlsx`.

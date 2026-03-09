@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { History, Search, TrendingUp, TrendingDown, Clock, ChevronRight, Copy, ExternalLink, X, Check } from 'lucide-react'
+import { History, Search, TrendingUp, TrendingDown, Clock, ChevronRight, Copy, ExternalLink, X, Check, Coins, ArrowUpRight, ArrowDownLeft } from 'lucide-react'
 import { useWalletStore } from '../stores/walletStore'
-import { formatKaspaAmount } from '../lib/kaspa'
-import { Transaction } from '../types'
+import { formatKaspaAmount, formatTokenAmount } from '../lib/kaspa'
+import { Transaction, type Krc20Operation } from '../types'
 import { Button } from '../components/ui/Button'
 
 export default function HistoryPage() {
-  const { transactions, network, address, fetchTransactions, isLoading } = useWalletStore()
+  const { transactions, krc20Operations, krc20Portfolio, krc20StatusMessage, network, address, fetchTransactions, fetchKrc20Operations, fetchKrc20Portfolio, isLoading, isLoadingKrc20 } = useWalletStore()
   const [searchQuery, setSearchQuery] = useState('')
   const [filter, setFilter] = useState<'all' | 'received' | 'sent' | 'pending'>('all')
   const [selectedTx, setSelectedTx] = useState<Transaction | null>(null)
@@ -15,7 +15,9 @@ export default function HistoryPage() {
 
   useEffect(() => {
     fetchTransactions()
-  }, [fetchTransactions])
+    fetchKrc20Portfolio()
+    fetchKrc20Operations()
+  }, [fetchTransactions, fetchKrc20Operations, fetchKrc20Portfolio])
 
   const filteredTransactions = transactions.filter((tx) => {
     const matchesSearch = tx.hash.toLowerCase().includes(searchQuery.toLowerCase())
@@ -52,6 +54,23 @@ export default function HistoryPage() {
   }
 
   const explorerUrl = (hash: string) => `${network.explorerUrl}/txs/${hash}`
+  const tokenDecimalsByTick = useMemo(
+    () => new Map(krc20Portfolio.map((token) => [token.tick, token.decimals])),
+    [krc20Portfolio]
+  )
+  const filteredTokenOperations = useMemo(() => {
+    const query = searchQuery.trim().toLowerCase()
+    return krc20Operations.filter((operation) => {
+      if (!query) return true
+      return (
+        operation.tick.toLowerCase().includes(query) ||
+        operation.op.toLowerCase().includes(query) ||
+        operation.hashRev.toLowerCase().includes(query) ||
+        operation.from?.toLowerCase().includes(query) ||
+        operation.to?.toLowerCase().includes(query)
+      )
+    })
+  }, [krc20Operations, searchQuery])
   const selectedTxType = selectedTx ? getTransactionType(selectedTx) : null
   const selectedTxAmount = selectedTx ? getTransactionAmount(selectedTx) : 0
   const selectedTxPending = selectedTx ? !selectedTx.blockHash : false
@@ -79,6 +98,18 @@ export default function HistoryPage() {
     setTimeout(() => setCopiedHash(false), 1500)
   }
 
+  const getTokenDirection = (operation: Krc20Operation) => {
+    const normalizedAddress = address.toLowerCase()
+    const isIncoming = operation.to?.toLowerCase() === normalizedAddress
+    const isOutgoing = operation.from?.toLowerCase() === normalizedAddress
+
+    if (operation.op === 'mint') return 'mint'
+    if (operation.op === 'burn') return 'burn'
+    if (isIncoming && !isOutgoing) return 'received'
+    if (isOutgoing && !isIncoming) return 'sent'
+    return operation.op
+  }
+
   return (
     <div className="space-y-6">
       <motion.div
@@ -104,7 +135,7 @@ export default function HistoryPage() {
             type="text"
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search by transaction ID..."
+            placeholder="Search by transaction ID, token ticker, address, or hash..."
             className="w-full pl-10 pr-4 py-3 rounded-xl bg-card border border-border focus:border-primary focus:outline-none focus:ring-2 focus:ring-primary/20 transition-all"
           />
         </div>
@@ -213,6 +244,118 @@ export default function HistoryPage() {
                 )
               })}
             </AnimatePresence>
+          </div>
+        )}
+      </motion.div>
+
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.22 }}
+        className="rounded-2xl bg-card border border-border overflow-hidden"
+      >
+        <div className="p-4 border-b border-border flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+          <div>
+            <div className="flex items-center gap-2">
+              <Coins className="w-5 h-5 text-cyan-400" />
+              <h2 className="text-lg font-semibold">KRC-20 Activity</h2>
+            </div>
+            <p className="text-sm text-muted-foreground mt-1">
+              Indexed token operations for the active account.
+            </p>
+          </div>
+          <span className="rounded-full border border-cyan-500/20 bg-cyan-500/10 px-3 py-1 text-xs font-medium text-cyan-300">
+            {filteredTokenOperations.length} events
+          </span>
+        </div>
+
+        {isLoadingKrc20 && krc20Operations.length === 0 ? (
+          <div className="p-8 text-center text-muted-foreground">
+            <div className="w-8 h-8 border-2 border-primary/30 border-t-primary rounded-full animate-spin mx-auto mb-4" />
+            <p>Loading KRC-20 activity...</p>
+          </div>
+        ) : filteredTokenOperations.length === 0 ? (
+          <div className="p-8 text-center">
+            <Coins className="w-12 h-12 text-cyan-400/70 mx-auto mb-4" />
+            <p className="text-lg font-medium">No KRC-20 activity found</p>
+            <p className="text-sm text-muted-foreground mt-1">
+              {krc20StatusMessage ?? 'Token operations for this account will appear here once the indexer has data.'}
+            </p>
+          </div>
+        ) : (
+          <div className="divide-y divide-border">
+            {filteredTokenOperations.slice(0, 20).map((operation, index) => {
+              const direction = getTokenDirection(operation)
+              const isPositive = direction === 'received' || direction === 'mint'
+              const decimals = tokenDecimalsByTick.get(operation.tick) ?? 8
+              const timestamp = operation.updatedAt ?? operation.addedAt
+              const counterparty =
+                direction === 'received'
+                  ? operation.from ?? 'Unknown'
+                  : direction === 'sent'
+                    ? operation.to ?? 'Unknown'
+                    : operation.to ?? operation.from ?? 'Indexer event'
+
+              return (
+                <motion.div
+                  key={`${operation.hashRev}-${operation.opScore}`}
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: index * 0.03 }}
+                  className="p-4 flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between"
+                >
+                  <div className="flex items-start gap-4 min-w-0">
+                    <div className={`w-12 h-12 rounded-full flex items-center justify-center ${
+                      isPositive ? 'bg-emerald-500/15 text-emerald-300' : 'bg-amber-500/15 text-amber-300'
+                    }`}>
+                      {isPositive ? <ArrowDownLeft className="w-5 h-5" /> : <ArrowUpRight className="w-5 h-5" />}
+                    </div>
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="font-medium">
+                          {direction === 'received'
+                            ? 'Received'
+                            : direction === 'sent'
+                              ? 'Sent'
+                              : direction.charAt(0).toUpperCase() + direction.slice(1)}
+                        </p>
+                        <span className="rounded-full border border-border bg-muted/40 px-2 py-1 text-[10px] font-medium uppercase tracking-[0.18em] text-muted-foreground">
+                          {operation.tick}
+                        </span>
+                        <span className={`rounded-full px-2 py-1 text-[10px] font-medium ${
+                          operation.opAccepted ? 'bg-emerald-500/10 text-emerald-300' : 'bg-red-500/10 text-red-300'
+                        }`}>
+                          {operation.opAccepted ? 'Indexed' : 'Rejected'}
+                        </span>
+                      </div>
+                      <p className="text-sm text-muted-foreground break-all mt-1">{counterparty}</p>
+                      <div className="flex flex-wrap items-center gap-3 mt-2 text-xs text-muted-foreground">
+                        <span>{timestamp ? new Date(timestamp).toLocaleString() : 'Pending index'}</span>
+                        <span className="font-mono break-all">#{operation.hashRev.slice(0, 20)}...</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-between gap-3 lg:justify-end">
+                    <div className="text-right">
+                      <p className={`font-semibold ${isPositive ? 'text-emerald-300' : 'text-amber-300'}`}>
+                        {isPositive ? '+' : '-'}{formatTokenAmount(operation.amountRaw, decimals)} {operation.tick}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {operation.op.toUpperCase()} score {operation.opScore}
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => navigator.clipboard.writeText(operation.hashRev)}
+                      className="p-2 rounded-lg border border-border hover:bg-muted transition-colors"
+                      title="Copy KRC-20 operation hash"
+                    >
+                      <Copy className="w-4 h-4" />
+                    </button>
+                  </div>
+                </motion.div>
+              )
+            })}
           </div>
         )}
       </motion.div>

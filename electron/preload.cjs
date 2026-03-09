@@ -13,4 +13,5 @@ contextBridge.exposeInMainWorld('kaspaDesktop', {
   openWalletFolder: () => ipcRenderer.invoke('kaspa-desktop:open-wallet-folder'),
   backupWalletFile: () => ipcRenderer.invoke('kaspa-desktop:backup-wallet-file'),
   syncWalletFile: (payload) => ipcRenderer.invoke('kaspa-desktop:sync-wallet-file', payload),
+  httpGet: (url) => ipcRenderer.invoke('kaspa-desktop:http-get', url),
 })

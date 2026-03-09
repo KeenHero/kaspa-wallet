@@ -1,9 +1,48 @@
-import { NETWORKS, type KaspaNetwork, type UTXO, type Transaction, type AddressInfo, type FeeEstimate, type DagInfo } from '../types'
+import type { IBlock, IGetBlockDagInfoResponse, IGetCoinSupplyResponse, IGetServerInfoResponse, ITransaction, RpcClient as KaspaRpcClient } from '@kasdk/web-rpc'
+import kaspaRpcWasmUrl from '@kasdk/web-rpc/kaspa_bg.wasm?url'
+import {
+  NETWORKS,
+  type KaspaNetwork,
+  type UTXO,
+  type Transaction,
+  type AddressInfo,
+  type FeeEstimate,
+  type DagInfo,
+  type Krc20Operation,
+  type Krc20PortfolioToken,
+  type Krc20TokenBalance,
+  type Krc20TokenInfo,
+} from '../types'
 import { type SignedTransactionPayload } from './transaction'
 
 const KASPA_DECIMALS = 100000000
+const LIVE_RECENT_BLOCK_LIMIT = 18
+const LIVE_RPC_NETWORK_IDS: Record<string, string> = {
+  mainnet: 'mainnet',
+  testnet10: 'testnet-10',
+  testnet11: 'testnet-11',
+}
+const LIVE_RPC_URLS: Record<string, string> = {
+  mainnet: 'wss://luna.kaspa.blue/kaspa/mainnet/wrpc/borsh',
+  testnet10: 'wss://baryon-10.kaspa.green/kaspa/testnet-10/wrpc/borsh',
+  testnet11: 'wss://meson-11.kaspa.green/kaspa/testnet-11/wrpc/borsh',
+}
+const LIVE_RPC_EVENT_NAMES = {
+  connect: 'connect',
+  disconnect: 'disconnect',
+  blockAdded: 'block-added',
+  virtualChainChanged: 'virtual-chain-changed',
+} as const
+
+type KaspaRpcModule = typeof import('@kasdk/web-rpc')
+
+let kaspaRpcModulePromise: Promise<KaspaRpcModule> | null = null
 
 function toNumber(value: unknown, fallback = 0): number {
+  if (typeof value === 'bigint') {
+    const converted = Number(value)
+    return Number.isFinite(converted) ? converted : fallback
+  }
   if (typeof value === 'number') {
     return Number.isFinite(value) ? value : fallback
   }
@@ -14,12 +53,100 @@ function toNumber(value: unknown, fallback = 0): number {
   return fallback
 }
 
+function toNumericString(value: unknown, fallback = '0'): string {
+  if (typeof value === 'bigint') {
+    return value.toString()
+  }
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? Math.trunc(value).toString() : fallback
+  }
+  if (typeof value === 'string' && value.length > 0) {
+    return value
+  }
+  return fallback
+}
+
 function normalizeAddressPath(address: string): string {
   return encodeURIComponent(address)
 }
 
+function normalizeKrc20Tick(value?: string): string {
+  return (value ?? '').trim().toUpperCase()
+}
+
+function normalizeKrc20Lookup(value: string): string {
+  return value.trim()
+}
+
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function sompiBigintToKaspa(value: bigint | number | string | undefined): number {
+  if (typeof value === 'bigint') {
+    const whole = value / BigInt(KASPA_DECIMALS)
+    const fraction = value % BigInt(KASPA_DECIMALS)
+    return Number(whole) + Number(fraction) / KASPA_DECIMALS
+  }
+
+  return sompiToKaspa(toNumber(value))
+}
+
+function normalizeTimestamp(value: unknown): number {
+  const timestamp = toNumber(value)
+  if (!timestamp) return 0
+  return timestamp > 1_000_000_000_000 ? timestamp : timestamp * 1000
+}
+
+function normalizeNodeHost(value?: string): string {
+  if (!value) return 'wRPC node'
+
+  try {
+    const parsed = new URL(value.includes('://') ? value : `wss://${value}`)
+    return parsed.hostname || value
+  } catch {
+    return value.replace(/^wss?:\/\//, '').split('/')[0] || value
+  }
+}
+
+function toBooleanish(value: unknown): boolean {
+  if (typeof value === 'boolean') {
+    return value
+  }
+
+  const normalized = String(value ?? '').trim().toLowerCase()
+  return normalized === '1' || normalized === 'true' || normalized === 'yes'
+}
+
+function toBigInt(value: bigint | number | string | undefined): bigint {
+  if (typeof value === 'bigint') return value
+  if (typeof value === 'number') return Number.isFinite(value) ? BigInt(Math.trunc(value)) : 0n
+  if (typeof value === 'string' && value.trim().length > 0) {
+    try {
+      return BigInt(value.trim())
+    } catch {
+      return 0n
+    }
+  }
+  return 0n
+}
+
+function compareNumericStrings(left: string, right: string): number {
+  const leftValue = toBigInt(left)
+  const rightValue = toBigInt(right)
+  if (leftValue === rightValue) return 0
+  return leftValue > rightValue ? 1 : -1
+}
+
+async function loadKaspaRpcModule(): Promise<KaspaRpcModule> {
+  if (!kaspaRpcModulePromise) {
+    kaspaRpcModulePromise = import('@kasdk/web-rpc').then(async (module) => {
+      await module.default({ module_or_path: kaspaRpcWasmUrl })
+      return module
+    })
+  }
+
+  return kaspaRpcModulePromise
 }
 
 function isTransientBroadcastError(message: string): boolean {
@@ -183,6 +310,64 @@ interface ApiRichListSnapshot {
   ranking?: ApiRichListEntry[]
 }
 
+interface KasplexListResponse<T> {
+  message?: string
+  prev?: string
+  next?: string
+  result?: T[]
+}
+
+interface ApiKrc20BalanceItem {
+  tick?: string
+  ca?: string
+  balance?: number | string
+  locked?: number | string
+  dec?: number | string
+  opScoreMod?: number | string
+}
+
+interface ApiKrc20TokenInfoItem {
+  tick?: string
+  ca?: string
+  name?: string
+  max?: number | string
+  lim?: number | string
+  pre?: number | string
+  to?: string
+  dec?: number | string
+  mod?: string
+  minted?: number | string
+  burned?: number | string
+  state?: string
+  hashRev?: string
+  opScoreAdd?: number | string
+  opScoreMod?: number | string
+  mtsAdd?: number | string
+  holderTotal?: number | string
+  transferTotal?: number | string
+  mintTotal?: number | string
+}
+
+interface ApiKrc20OperationItem {
+  p?: string
+  op?: string
+  tick?: string
+  ca?: string
+  amt?: number | string
+  from?: string
+  to?: string
+  price?: number | string
+  feeRev?: number | string
+  opScore?: number | string
+  hashRev?: string
+  txAccept?: boolean | number | string
+  opAccept?: boolean | number | string
+  opError?: string
+  checkpoint?: string
+  mtsAdd?: number | string
+  mtsMod?: number | string
+}
+
 interface ApiAddressTransactionCountResponse {
   total?: number | string
   transactionsCount?: number | string
@@ -315,6 +500,38 @@ export interface ExplorerBlock {
   transactions: ExplorerBlockTransaction[]
 }
 
+export type ExplorerStreamSource = 'wrpc' | 'resolver'
+
+export interface ExplorerStreamStatus {
+  state: 'idle' | 'connecting' | 'streaming' | 'error'
+  source: ExplorerStreamSource
+  label: string
+  detail: string
+  host?: string
+  serverVersion?: string
+  lastEventAt?: number
+}
+
+export interface ExplorerLiveUpdate {
+  at: number
+  dagInfo?: DagInfo
+  coinSupply?: ExplorerCoinSupply
+  health?: ExplorerHealth
+  recentBlocks?: ExplorerBlock[]
+}
+
+export interface ExplorerLiveStreamCallbacks {
+  onStatusChange?: (status: ExplorerStreamStatus) => void
+  onUpdate?: (update: ExplorerLiveUpdate) => void
+  onError?: (error: Error) => void
+}
+
+export interface ExplorerLiveStreamController {
+  start(): Promise<void>
+  stop(): Promise<void>
+  refresh(): Promise<void>
+}
+
 export function kaspaToSompi(kas: number): number {
   return Math.round(kas * KASPA_DECIMALS)
 }
@@ -326,6 +543,33 @@ export function sompiToKaspa(sompi: number): number {
 export function formatKaspaAmount(amount: number, decimals: number = 8): string {
   const kas = sompiToKaspa(amount)
   return kas.toFixed(decimals).replace(/\.?0+$/, '') || '0'
+}
+
+export function formatTokenAmount(
+  amount: bigint | number | string | undefined,
+  decimals: number = 8,
+  maxFractionDigits: number = 6
+): string {
+  const normalizedDecimals = Number.isFinite(decimals) ? Math.max(0, Math.trunc(decimals)) : 0
+  const raw = toBigInt(amount)
+  const isNegative = raw < 0n
+  const value = isNegative ? -raw : raw
+
+  if (normalizedDecimals === 0) {
+    return `${isNegative ? '-' : ''}${value.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',')}`
+  }
+
+  const divisor = 10n ** BigInt(normalizedDecimals)
+  const whole = value / divisor
+  const fraction = value % divisor
+  let fractionText = fraction.toString().padStart(normalizedDecimals, '0').replace(/0+$/, '')
+
+  if (maxFractionDigits >= 0 && fractionText.length > maxFractionDigits) {
+    fractionText = fractionText.slice(0, maxFractionDigits).replace(/0+$/, '')
+  }
+
+  const wholeText = whole.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+  return `${isNegative ? '-' : ''}${wholeText}${fractionText ? `.${fractionText}` : ''}`
 }
 
 export function formatAddress(address: string, maxLength: number = 16): string {
@@ -425,8 +669,546 @@ function mapApiBlock(block: ApiBlockModel): ExplorerBlock {
   }
 }
 
+function mapKrc20TokenBalance(item: ApiKrc20BalanceItem): Krc20TokenBalance {
+  return {
+    tick: normalizeKrc20Tick(item.tick),
+    contractAddress: item.ca,
+    balanceRaw: toNumericString(item.balance),
+    lockedRaw: toNumericString(item.locked),
+    decimals: toNumber(item.dec),
+    opScoreMod: toNumericString(item.opScoreMod),
+  }
+}
+
+function mapKrc20TokenInfo(item: ApiKrc20TokenInfoItem): Krc20TokenInfo {
+  return {
+    tick: normalizeKrc20Tick(item.tick),
+    contractAddress: item.ca,
+    name: item.name,
+    maxRaw: toNumericString(item.max),
+    limitRaw: toNumericString(item.lim),
+    premineRaw: toNumericString(item.pre),
+    toAddress: item.to ?? '',
+    decimals: toNumber(item.dec),
+    mode: item.mod ?? '',
+    mintedRaw: toNumericString(item.minted),
+    burnedRaw: toNumericString(item.burned),
+    state: item.state ?? 'unknown',
+    hashRev: item.hashRev ?? '',
+    opScoreAdd: item.opScoreAdd !== undefined ? toNumericString(item.opScoreAdd) : undefined,
+    opScoreMod: item.opScoreMod !== undefined ? toNumericString(item.opScoreMod) : undefined,
+    createdAt: item.mtsAdd !== undefined ? normalizeTimestamp(item.mtsAdd) : undefined,
+    holderTotal: item.holderTotal !== undefined ? toNumber(item.holderTotal) : undefined,
+    transferTotal: item.transferTotal !== undefined ? toNumber(item.transferTotal) : undefined,
+    mintTotal: item.mintTotal !== undefined ? toNumber(item.mintTotal) : undefined,
+  }
+}
+
+function mapKrc20Operation(item: ApiKrc20OperationItem): Krc20Operation {
+  return {
+    protocol: item.p ?? 'KRC-20',
+    op: item.op ?? '',
+    tick: normalizeKrc20Tick(item.tick),
+    contractAddress: item.ca,
+    amountRaw: toNumericString(item.amt),
+    from: item.from,
+    to: item.to,
+    priceRaw: item.price !== undefined ? toNumericString(item.price) : undefined,
+    feeRaw: item.feeRev !== undefined ? toNumericString(item.feeRev) : undefined,
+    opScore: toNumericString(item.opScore),
+    hashRev: item.hashRev ?? '',
+    txAccepted: toBooleanish(item.txAccept),
+    opAccepted: toBooleanish(item.opAccept),
+    opError: item.opError,
+    checkpoint: item.checkpoint,
+    addedAt: item.mtsAdd !== undefined ? normalizeTimestamp(item.mtsAdd) : undefined,
+    updatedAt: item.mtsMod !== undefined ? normalizeTimestamp(item.mtsMod) : undefined,
+  }
+}
+
+function mapRpcBlockTransaction(tx: ITransaction): ExplorerBlockTransaction {
+  const outputs = tx.outputs ?? []
+
+  return {
+    hash: tx.verboseData?.transactionId ?? tx.verboseData?.hash ?? '',
+    blockHash: tx.verboseData?.blockHash,
+    blockTime: normalizeTimestamp(tx.verboseData?.blockTime),
+    inputsCount: tx.inputs?.length ?? 0,
+    outputsCount: outputs.length,
+    totalOutput: outputs.reduce((sum, output) => sum + toNumber(output.value), 0),
+    recipients: dedupeStrings(outputs.map((output) => output.verboseData?.scriptPublicKeyAddress)),
+  }
+}
+
+function mapRpcBlock(block: IBlock): ExplorerBlock {
+  const transactions = (block.transactions ?? []).map(mapRpcBlockTransaction)
+  const parentHashes = dedupeStrings((block.header.parentsByLevel ?? []).flatMap((parentSet) => parentSet ?? []))
+  const transactionIds = dedupeStrings([
+    ...(block.verboseData?.transactionIds ?? []),
+    ...transactions.map((transaction) => transaction.hash),
+  ])
+
+  return {
+    hash: block.verboseData?.hash ?? block.header.hash ?? '',
+    timestamp: normalizeTimestamp(block.header.timestamp),
+    bits: toNumber(block.header.bits),
+    daaScore: toNumber(block.header.daaScore),
+    blueScore: toNumber(block.verboseData?.blueScore ?? block.header.blueScore),
+    difficulty: toNumber(block.verboseData?.difficulty),
+    selectedParentHash: block.verboseData?.selectedParentHash,
+    parentHashes,
+    childHashes: dedupeStrings(block.verboseData?.childrenHashes ?? []),
+    mergeSetBluesHashes: dedupeStrings(block.verboseData?.mergeSetBluesHashes ?? []),
+    mergeSetRedsHashes: dedupeStrings(block.verboseData?.mergeSetRedsHashes ?? []),
+    isChainBlock: Boolean(block.verboseData?.isChainBlock),
+    transactionIds,
+    transactionCount: transactionIds.length || transactions.length,
+    transactions,
+  }
+}
+
+function mapRpcDagInfo(dagInfo: IGetBlockDagInfoResponse, sinkBlueScore?: number): DagInfo {
+  return {
+    blockCount: toNumber(dagInfo.blockCount),
+    headerCount: toNumber(dagInfo.headerCount),
+    difficulty: toNumber(dagInfo.difficulty),
+    pastMedianTime: normalizeTimestamp(dagInfo.pastMedianTime),
+    virtualSelectedParentBlueScore: sinkBlueScore ?? toNumber(dagInfo.virtualDaaScore),
+    tipHashes: dedupeStrings(dagInfo.tipHashes ?? []),
+    networkName: dagInfo.network,
+    sink: dagInfo.sink,
+  }
+}
+
+function mapRpcCoinSupply(supply: IGetCoinSupplyResponse): ExplorerCoinSupply {
+  return {
+    circulatingSupply: sompiBigintToKaspa(supply.circulatingSompi),
+    maxSupply: sompiBigintToKaspa(supply.maxSompi),
+  }
+}
+
+function mapRpcHealth(serverInfo: IGetServerInfoResponse, currentUrl?: string): ExplorerHealth {
+  return {
+    kaspadSynced: Boolean(serverInfo.isSynced),
+    databaseSynced: true,
+    blueScoreDiff: 0,
+    acceptedTxBlockTimeDiff: 0,
+    serverVersion: serverInfo.serverVersion ?? 'Unknown',
+    host: normalizeNodeHost(currentUrl),
+  }
+}
+
+function buildRecentBlocksFromCache(
+  blockCache: Map<string, ExplorerBlock>,
+  tipHashes: string[],
+  limit: number
+): ExplorerBlock[] {
+  const queue = [...tipHashes]
+  const visited = new Set<string>()
+  const collected: ExplorerBlock[] = []
+
+  while (queue.length > 0 && collected.length < limit) {
+    const hash = queue.shift()
+    if (!hash || visited.has(hash)) continue
+    visited.add(hash)
+
+    const block = blockCache.get(hash)
+    if (!block) continue
+
+    collected.push(block)
+    if (block.selectedParentHash && !visited.has(block.selectedParentHash)) {
+      queue.push(block.selectedParentHash)
+    }
+  }
+
+  if (collected.length < limit) {
+    const fallbackBlocks = [...blockCache.values()]
+      .filter((block) => !visited.has(block.hash))
+      .sort((left, right) => right.blueScore - left.blueScore || right.timestamp - left.timestamp)
+
+    for (const block of fallbackBlocks) {
+      collected.push(block)
+      if (collected.length >= limit) break
+    }
+  }
+
+  return collected
+    .sort((left, right) => right.blueScore - left.blueScore || right.timestamp - left.timestamp)
+    .slice(0, limit)
+}
+
+class KaspaExplorerLiveStream implements ExplorerLiveStreamController {
+  private readonly blockCache = new Map<string, ExplorerBlock>()
+  private rpc: KaspaRpcClient | null = null
+  private rpcModule: KaspaRpcModule | null = null
+  private syncTimer: number | null = null
+  private syncPromise: Promise<void> | null = null
+  private syncQueued = false
+  private stopped = false
+  private currentSource: ExplorerStreamSource = 'wrpc'
+  private lastStatus: ExplorerStreamStatus = {
+    state: 'idle',
+    source: 'wrpc',
+    label: 'Idle',
+    detail: 'Live stream is not connected yet.',
+  }
+
+  private readonly handleConnect = () => {
+    void this.onConnected()
+  }
+
+  private readonly handleDisconnect = () => {
+    if (this.stopped) return
+
+    this.setStatus({
+      state: 'connecting',
+      source: this.currentSource,
+      label: 'Reconnecting live feed',
+      detail: 'The Kaspa wRPC connection dropped and is reconnecting.',
+      host: this.rpc?.url ? normalizeNodeHost(this.rpc.url) : this.lastStatus.host,
+      serverVersion: this.lastStatus.serverVersion,
+      lastEventAt: Date.now(),
+    })
+  }
+
+  private readonly handleRpcEvent = () => {
+    this.queueSync()
+  }
+
+  constructor(
+    private readonly network: KaspaNetwork,
+    private readonly callbacks: ExplorerLiveStreamCallbacks
+  ) {}
+
+  async start(): Promise<void> {
+    this.stopped = false
+    this.blockCache.clear()
+
+    try {
+      await this.connectDirect()
+    } catch (error) {
+      try {
+        await this.connectWithResolver()
+      } catch (resolverError) {
+        const typedError =
+          resolverError instanceof Error
+            ? resolverError
+            : error instanceof Error
+              ? error
+              : new Error('Unable to connect to a Kaspa wRPC node.')
+
+        this.setStatus({
+          state: 'error',
+          source: this.currentSource,
+          label: 'Live stream unavailable',
+          detail: typedError.message,
+          lastEventAt: Date.now(),
+        })
+        this.callbacks.onError?.(typedError)
+        throw typedError
+      }
+    }
+  }
+
+  async stop(): Promise<void> {
+    this.stopped = true
+
+    if (this.syncTimer != null) {
+      window.clearTimeout(this.syncTimer)
+      this.syncTimer = null
+    }
+
+    await this.teardownRpc()
+  }
+
+  async refresh(): Promise<void> {
+    await this.syncNow()
+  }
+
+  private async teardownRpc(): Promise<void> {
+    const rpc = this.rpc
+    const module = this.rpcModule
+
+    this.rpc = null
+
+    if (rpc && module) {
+      rpc.removeEventListener(LIVE_RPC_EVENT_NAMES.connect, this.handleConnect)
+      rpc.removeEventListener(LIVE_RPC_EVENT_NAMES.disconnect, this.handleDisconnect)
+      rpc.removeEventListener(LIVE_RPC_EVENT_NAMES.blockAdded, this.handleRpcEvent)
+      rpc.removeEventListener(LIVE_RPC_EVENT_NAMES.virtualChainChanged, this.handleRpcEvent)
+
+      try {
+        await rpc.disconnect()
+      } catch {
+        // Ignore disconnect failures when tearing down the stream.
+      }
+    }
+  }
+
+  private async connectDirect(): Promise<void> {
+    const url = LIVE_RPC_URLS[this.network.id]
+    if (!url) {
+      throw new Error(`No direct wRPC endpoint configured for ${this.network.name}.`)
+    }
+
+    this.currentSource = 'wrpc'
+    await this.connect(url)
+  }
+
+  private async connectWithResolver(): Promise<void> {
+    this.currentSource = 'resolver'
+    await this.teardownRpc()
+    const module = await loadKaspaRpcModule()
+    this.rpcModule = module
+
+    const rpc = new module.RpcClient({
+      resolver: new module.Resolver(),
+      networkId: LIVE_RPC_NETWORK_IDS[this.network.id] ?? 'mainnet',
+      encoding: module.Encoding.Borsh,
+    })
+
+    this.attachListeners(rpc)
+    this.rpc = rpc
+
+    this.setStatus({
+      state: 'connecting',
+      source: 'resolver',
+      label: 'Resolving live feed',
+      detail: 'Finding a public Kaspa wRPC node for the live monitor.',
+      lastEventAt: Date.now(),
+    })
+
+    await rpc.connect({ timeoutDuration: 8000 })
+  }
+
+  private async connect(url: string): Promise<void> {
+    await this.teardownRpc()
+    const module = await loadKaspaRpcModule()
+    this.rpcModule = module
+
+    const rpc = new module.RpcClient({
+      url,
+      networkId: LIVE_RPC_NETWORK_IDS[this.network.id] ?? 'mainnet',
+      encoding: module.Encoding.Borsh,
+    })
+
+    this.attachListeners(rpc)
+    this.rpc = rpc
+
+    this.setStatus({
+      state: 'connecting',
+      source: 'wrpc',
+      label: 'Connecting live feed',
+      detail: `Opening direct stream to ${normalizeNodeHost(url)}.`,
+      host: normalizeNodeHost(url),
+      lastEventAt: Date.now(),
+    })
+
+    await rpc.connect({ timeoutDuration: 8000 })
+  }
+
+  private attachListeners(rpc: KaspaRpcClient) {
+    rpc.addEventListener(LIVE_RPC_EVENT_NAMES.connect, this.handleConnect)
+    rpc.addEventListener(LIVE_RPC_EVENT_NAMES.disconnect, this.handleDisconnect)
+    rpc.addEventListener(LIVE_RPC_EVENT_NAMES.blockAdded, this.handleRpcEvent)
+    rpc.addEventListener(LIVE_RPC_EVENT_NAMES.virtualChainChanged, this.handleRpcEvent)
+  }
+
+  private async onConnected(): Promise<void> {
+    if (this.stopped || !this.rpc) return
+
+    try {
+      await Promise.all([
+        this.rpc.subscribeBlockAdded(),
+        this.rpc.subscribeVirtualChainChanged(false),
+      ])
+      await this.syncNow()
+    } catch (error) {
+      const typedError =
+        error instanceof Error ? error : new Error(typeof error === 'string' ? error : 'Live stream connection failed.')
+      this.callbacks.onError?.(typedError)
+      this.setStatus({
+        state: 'error',
+        source: this.currentSource,
+        label: 'Live stream degraded',
+        detail: typedError.message,
+        host: this.rpc.url ? normalizeNodeHost(this.rpc.url) : this.lastStatus.host,
+        lastEventAt: Date.now(),
+      })
+    }
+  }
+
+  private queueSync() {
+    if (this.stopped) return
+
+    if (this.syncTimer != null) {
+      return
+    }
+
+    this.syncTimer = window.setTimeout(() => {
+      this.syncTimer = null
+      void this.syncNow()
+    }, 220)
+  }
+
+  private async syncNow(): Promise<void> {
+    if (this.syncPromise) {
+      this.syncQueued = true
+      return this.syncPromise
+    }
+
+    this.syncPromise = this.performSync().finally(() => {
+      this.syncPromise = null
+
+      if (this.syncQueued) {
+        this.syncQueued = false
+        void this.syncNow()
+      }
+    })
+
+    return this.syncPromise
+  }
+
+  private async performSync(): Promise<void> {
+    const rpc = this.rpc
+    if (!rpc || this.stopped) return
+
+    const [dagResult, serverResult, sinkResult, supplyResult] = await Promise.allSettled([
+      rpc.getBlockDagInfo(),
+      rpc.getServerInfo(),
+      rpc.getSinkBlueScore(),
+      rpc.getCoinSupply(),
+    ])
+
+    const dagInfo =
+      dagResult.status === 'fulfilled'
+        ? mapRpcDagInfo(
+            dagResult.value,
+            sinkResult.status === 'fulfilled' ? toNumber(sinkResult.value.blueScore) : undefined
+          )
+        : undefined
+
+    const tipHashes = dagInfo?.tipHashes ?? []
+    const recentBlocks = tipHashes.length > 0 ? await this.fetchRecentBlocks(tipHashes) : []
+
+    const health =
+      serverResult.status === 'fulfilled'
+        ? mapRpcHealth(serverResult.value, rpc.url)
+        : undefined
+
+    const coinSupply =
+      supplyResult.status === 'fulfilled'
+        ? mapRpcCoinSupply(supplyResult.value)
+        : undefined
+
+    const liveHost =
+      serverResult.status === 'fulfilled'
+        ? normalizeNodeHost(rpc.url)
+        : this.lastStatus.host
+
+    const serverVersion =
+      serverResult.status === 'fulfilled'
+        ? serverResult.value.serverVersion
+        : this.lastStatus.serverVersion
+
+    this.setStatus({
+      state: 'streaming',
+      source: this.currentSource,
+      label: this.currentSource === 'wrpc' ? 'Streaming live chain' : 'Streaming via resolver',
+      detail: liveHost ? `Receiving live block updates from ${liveHost}.` : 'Receiving live block updates.',
+      host: liveHost,
+      serverVersion,
+      lastEventAt: Date.now(),
+    })
+
+    this.callbacks.onUpdate?.({
+      at: Date.now(),
+      dagInfo,
+      coinSupply,
+      health,
+      recentBlocks,
+    })
+  }
+
+  private async fetchRecentBlocks(tipHashes: string[]): Promise<ExplorerBlock[]> {
+    const rpc = this.rpc
+    if (!rpc) return []
+
+    const queue = [...tipHashes]
+    const visited = new Set<string>()
+    const blocks: ExplorerBlock[] = []
+
+    while (queue.length > 0 && blocks.length < LIVE_RECENT_BLOCK_LIMIT) {
+      const nextBatch: string[] = []
+
+      while (queue.length > 0 && nextBatch.length < 3 && blocks.length + nextBatch.length < LIVE_RECENT_BLOCK_LIMIT) {
+        const hash = queue.shift()
+        if (!hash || visited.has(hash)) continue
+        visited.add(hash)
+
+        const cachedBlock = this.blockCache.get(hash)
+        if (cachedBlock) {
+          blocks.push(cachedBlock)
+          if (cachedBlock.selectedParentHash && !visited.has(cachedBlock.selectedParentHash)) {
+            queue.push(cachedBlock.selectedParentHash)
+          }
+          continue
+        }
+
+        nextBatch.push(hash)
+      }
+
+      if (nextBatch.length === 0) {
+        continue
+      }
+
+      const fetchedBlocks = await Promise.all(
+        nextBatch.map(async (hash) => {
+          const response = await rpc.getBlock({ hash, includeTransactions: false })
+          return mapRpcBlock(response.block)
+        })
+      )
+
+      for (const block of fetchedBlocks) {
+        if (!block.hash) continue
+        this.blockCache.set(block.hash, block)
+        blocks.push(block)
+        if (block.selectedParentHash && !visited.has(block.selectedParentHash)) {
+          queue.push(block.selectedParentHash)
+        }
+      }
+    }
+
+    const recentBlocks = buildRecentBlocksFromCache(this.blockCache, tipHashes, LIVE_RECENT_BLOCK_LIMIT)
+    this.trimCache(recentBlocks)
+    return recentBlocks
+  }
+
+  private trimCache(recentBlocks: ExplorerBlock[]) {
+    const keep = new Set(recentBlocks.map((block) => block.hash))
+
+    for (const block of recentBlocks) {
+      if (block.selectedParentHash) {
+        keep.add(block.selectedParentHash)
+      }
+    }
+
+    for (const hash of this.blockCache.keys()) {
+      if (!keep.has(hash)) {
+        this.blockCache.delete(hash)
+      }
+    }
+  }
+
+  private setStatus(status: ExplorerStreamStatus) {
+    this.lastStatus = status
+    this.callbacks.onStatusChange?.(status)
+  }
+}
+
 class KaspaAPI {
   private network: KaspaNetwork
+  private readonly krc20InfoCache = new Map<string, Krc20TokenInfo>()
 
   constructor(network: KaspaNetwork = NETWORKS.mainnet) {
     this.network = network
@@ -438,6 +1220,10 @@ class KaspaAPI {
 
   getNetwork(): KaspaNetwork {
     return this.network
+  }
+
+  supportsKrc20(): boolean {
+    return Boolean(this.network.krc20ApiUrl)
   }
 
   private async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
@@ -453,6 +1239,49 @@ class KaspaAPI {
     if (!response.ok) {
       const error = await response.text()
       throw new Error(`API Error: ${response.status} - ${error}`)
+    }
+
+    return response.json()
+  }
+
+  private getKrc20BaseUrl(): string {
+    if (!this.network.krc20ApiUrl) {
+      throw new Error(`KRC-20 indexing is not currently available on ${this.network.name}.`)
+    }
+
+    return this.network.krc20ApiUrl
+  }
+
+  private async requestKrc20<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+    const url = `${this.getKrc20BaseUrl()}${endpoint}`
+    const desktopGet = typeof window !== 'undefined' ? window.kaspaDesktop?.httpGet : undefined
+
+    if (desktopGet) {
+      const response = await desktopGet(url)
+      if (!response.ok) {
+        throw new Error(`KRC-20 API Error: ${response.status} - ${response.body}`)
+      }
+
+      return JSON.parse(response.body) as T
+    }
+
+    if (typeof window !== 'undefined') {
+      throw new Error(
+        'KRC-20 data is currently available in the Electron desktop build only because the public Kasplex API blocks direct browser-origin requests.'
+      )
+    }
+
+    const response = await fetch(url, {
+      headers: {
+        'Content-Type': 'application/json',
+        ...options.headers,
+      },
+      ...options,
+    })
+
+    if (!response.ok) {
+      const error = await response.text()
+      throw new Error(`KRC-20 API Error: ${response.status} - ${error}`)
     }
 
     return response.json()
@@ -613,6 +1442,109 @@ class KaspaAPI {
     return blocks
       .sort((left, right) => right.blueScore - left.blueScore || right.timestamp - left.timestamp)
       .slice(0, limit)
+  }
+
+  createExplorerLiveStream(callbacks: ExplorerLiveStreamCallbacks): ExplorerLiveStreamController {
+    return new KaspaExplorerLiveStream(this.network, callbacks)
+  }
+
+  async getKrc20AddressTokenList(address: string): Promise<Krc20TokenBalance[]> {
+    const encodedAddress = normalizeAddressPath(address)
+    const data = await this.requestKrc20<KasplexListResponse<ApiKrc20BalanceItem>>(
+      `/krc20/address/${encodedAddress}/tokenlist`
+    )
+
+    return (data.result ?? [])
+      .map(mapKrc20TokenBalance)
+      .filter((token) => token.tick.length > 0)
+      .sort((left, right) => {
+        const balanceOrder = compareNumericStrings(right.balanceRaw, left.balanceRaw)
+        if (balanceOrder !== 0) return balanceOrder
+        const lockedOrder = compareNumericStrings(right.lockedRaw, left.lockedRaw)
+        if (lockedOrder !== 0) return lockedOrder
+        return right.opScoreMod.localeCompare(left.opScoreMod)
+      })
+  }
+
+  async getKrc20TokenInfo(tokenId: string): Promise<Krc20TokenInfo> {
+    const lookup = normalizeKrc20Lookup(tokenId)
+    const cacheKey = `${this.network.id}:${lookup.toUpperCase()}`
+    const cached = this.krc20InfoCache.get(cacheKey)
+    if (cached) {
+      return cached
+    }
+
+    const data = await this.requestKrc20<KasplexListResponse<ApiKrc20TokenInfoItem>>(
+      `/krc20/token/${encodeURIComponent(lookup)}`
+    )
+    const info = mapKrc20TokenInfo(data.result?.[0] ?? {})
+    if (!info.tick) {
+      throw new Error(`KRC-20 token ${lookup} was not found.`)
+    }
+
+    this.krc20InfoCache.set(cacheKey, info)
+    return info
+  }
+
+  async getKrc20Portfolio(address: string, metadataLimit: number = 16): Promise<Krc20PortfolioToken[]> {
+    const balances = await this.getKrc20AddressTokenList(address)
+    if (balances.length === 0) {
+      return []
+    }
+
+    const metadataTargets = balances.slice(0, Math.max(0, metadataLimit))
+    const metadataResults = await Promise.allSettled(
+      metadataTargets.map((token) => this.getKrc20TokenInfo(token.contractAddress ?? token.tick))
+    )
+    const metadataByTick = new Map<string, Krc20TokenInfo>()
+
+    for (const result of metadataResults) {
+      if (result.status !== 'fulfilled') continue
+      metadataByTick.set(result.value.tick, result.value)
+    }
+
+    return balances.map((token) => {
+      const metadata = metadataByTick.get(token.tick)
+      return {
+        ...token,
+        contractAddress: metadata?.contractAddress ?? token.contractAddress,
+        name: metadata?.name,
+        state: metadata?.state,
+        mode: metadata?.mode,
+        mintedRaw: metadata?.mintedRaw,
+        maxRaw: metadata?.maxRaw,
+        holderTotal: metadata?.holderTotal,
+        metadataLoaded: Boolean(metadata),
+      }
+    })
+  }
+
+  async getKrc20Operations({
+    address,
+    tick,
+    limit = 50,
+  }: {
+    address?: string
+    tick?: string
+    limit?: number
+  } = {}): Promise<Krc20Operation[]> {
+    const params = new URLSearchParams()
+    if (address?.trim()) {
+      params.set('address', address.trim())
+    }
+    if (tick?.trim()) {
+      params.set('tick', normalizeKrc20Tick(tick))
+    }
+    if (limit > 0) {
+      params.set('limit', String(Math.trunc(limit)))
+    }
+
+    const suffix = params.toString() ? `?${params.toString()}` : ''
+    const data = await this.requestKrc20<KasplexListResponse<ApiKrc20OperationItem>>(`/krc20/oplist${suffix}`)
+
+    return (data.result ?? [])
+      .map(mapKrc20Operation)
+      .filter((operation) => operation.tick.length > 0 && operation.hashRev.length > 0)
   }
 
   async getAddressInfo(address: string): Promise<AddressInfo> {

@@ -78,6 +78,7 @@
     }
   },
   "dependencies": {
+    "@kasdk/web-rpc": "^0.15.2",
     "@noble/curves": "^1.9.7",
     "@noble/hashes": "^1.4.0",
     "@radix-ui/react-dialog": "^1.1.1",
