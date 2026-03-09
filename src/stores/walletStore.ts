@@ -20,10 +20,11 @@ import {
   loadLegacyWalletSnapshot,
   saveEncryptedWalletToStorage,
   loadEncryptedWalletFromStorage,
-  loadEncryptedWalletMetaFromStorage,
-  clearEncryptedWalletFromStorage,
+  loadEncryptedWalletMeta,
+  clearEncryptedWalletStorage,
   clearLegacyWalletStorage,
   hasEncryptedWalletInStorage,
+  hasEncryptedWalletStored,
   generateMnemonic,
   derivePrivateKeyFromMnemonic,
   isValidKaspaAddress,
@@ -321,9 +322,9 @@ export const useWalletStore = create<WalletState>((set, get) => ({
     clearSessionReferences()
 
     try {
-      if (hasEncryptedWalletInStorage()) {
+      if (await hasEncryptedWalletStored()) {
         clearLegacyWalletStorage()
-        const meta = loadEncryptedWalletMetaFromStorage()
+        const meta = await loadEncryptedWalletMeta()
         const activeWalletName = meta.wallets.find((walletProfile) => walletProfile.id === meta.activeWalletId)?.name ?? meta.wallets[0]?.name ?? ''
 
         api.setNetwork(NETWORKS.mainnet)
@@ -737,7 +738,7 @@ export const useWalletStore = create<WalletState>((set, get) => ({
       vault.wallets.splice(index, 1)
       if (vault.wallets.length === 0) {
         clearSessionReferences()
-        clearEncryptedWalletFromStorage()
+        await clearEncryptedWalletStorage()
         clearLegacyWalletStorage()
         api.setNetwork(NETWORKS.mainnet)
         set({

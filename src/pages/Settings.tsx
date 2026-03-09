@@ -22,10 +22,13 @@ import {
   X,
   Eye,
   EyeOff,
+  HardDrive,
+  FolderOpen,
+  Download,
 } from 'lucide-react'
 import { useWalletStore } from '../stores/walletStore'
 import { NETWORKS } from '../types'
-import { generateMnemonic } from '../lib/wallet'
+import { generateMnemonic, getEncryptedWalletBackupPayload } from '../lib/wallet'
 import { Button } from '../components/ui/Button'
 
 const AUTO_LOCK_PRESETS = [0, 1, 5, 15, 30, 60]
@@ -83,6 +86,11 @@ export default function SettingsPage() {
   const [revealedSeedCopied, setRevealedSeedCopied] = useState(false)
   const [isRevealingSeed, setIsRevealingSeed] = useState(false)
   const [isSeedVisible, setIsSeedVisible] = useState(false)
+  const [walletFileInfo, setWalletFileInfo] = useState<KaspaDesktopWalletFileInfo | null>(null)
+  const [walletFileNotice, setWalletFileNotice] = useState('')
+  const [walletFileNoticeTone, setWalletFileNoticeTone] = useState<'success' | 'error'>('success')
+  const [isWalletFileBusy, setIsWalletFileBusy] = useState(false)
+  const isDesktopApp = Boolean(window.kaspaDesktop?.isDesktop)
 
   useEffect(() => {
     setCustomAutoLock(String(autoLockMinutes))
@@ -95,6 +103,20 @@ export default function SettingsPage() {
       setRevealedSeedCopied(false)
       setIsSeedVisible(false)
     }
+  }, [activeWalletId])
+
+  useEffect(() => {
+    const loadWalletFileInfo = async () => {
+      if (!window.kaspaDesktop?.getWalletFileInfo) return
+      try {
+        const info = await window.kaspaDesktop.getWalletFileInfo()
+        setWalletFileInfo(info)
+      } catch {
+        setWalletFileInfo(null)
+      }
+    }
+
+    void loadWalletFileInfo()
   }, [activeWalletId])
 
   const networkContacts = useMemo(
@@ -201,6 +223,65 @@ export default function SettingsPage() {
     await navigator.clipboard.writeText(revealedSeed)
     setRevealedSeedCopied(true)
     setTimeout(() => setRevealedSeedCopied(false), 1500)
+  }
+
+  const refreshWalletFileInfo = async () => {
+    if (!window.kaspaDesktop?.getWalletFileInfo) return
+    const info = await window.kaspaDesktop.getWalletFileInfo()
+    setWalletFileInfo(info)
+  }
+
+  const triggerBackupDownload = (payload: string, fileName: string) => {
+    const blob = new Blob([payload], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const link = document.createElement('a')
+    link.href = url
+    link.download = fileName
+    link.click()
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+  }
+
+  const handleOpenWalletFolder = async () => {
+    if (!window.kaspaDesktop?.openWalletFolder) return
+    try {
+      setIsWalletFileBusy(true)
+      setWalletFileNotice('')
+      await window.kaspaDesktop.openWalletFolder()
+      await refreshWalletFileInfo()
+    } catch (error) {
+      setWalletFileNotice(error instanceof Error ? error.message : 'Failed to open wallet folder')
+      setWalletFileNoticeTone('error')
+    } finally {
+      setIsWalletFileBusy(false)
+    }
+  }
+
+  const handleBackupWalletFile = async () => {
+    try {
+      setIsWalletFileBusy(true)
+      setWalletFileNotice('')
+
+      if (window.kaspaDesktop?.backupWalletFile) {
+        const result = await window.kaspaDesktop.backupWalletFile()
+        if (!result.canceled) {
+          setWalletFileNotice(`Backup saved to ${result.filePath}`)
+          setWalletFileNoticeTone('success')
+        }
+        await refreshWalletFileInfo()
+        return
+      }
+
+      const payload = getEncryptedWalletBackupPayload()
+      const timestamp = new Date().toISOString().slice(0, 10)
+      triggerBackupDownload(payload, `wallet-backup-${timestamp}.dat`)
+      setWalletFileNotice('Encrypted wallet backup downloaded.')
+      setWalletFileNoticeTone('success')
+    } catch (error) {
+      setWalletFileNotice(error instanceof Error ? error.message : 'Failed to back up wallet file')
+      setWalletFileNoticeTone('error')
+    } finally {
+      setIsWalletFileBusy(false)
+    }
   }
 
   const revealedWords = revealedSeed.split(' ').filter(Boolean)
@@ -330,11 +411,14 @@ export default function SettingsPage() {
             <ShieldAlert className="w-5 h-5 text-red-400" />
           </div>
           <div>
-            <h2 className="font-semibold">Seed Backup</h2>
-            <p className="text-sm text-muted-foreground">Reveal and backup seed phrase for any wallet</p>
+            <h2 className="font-semibold">Recovery Phrase</h2>
+            <p className="text-sm text-muted-foreground">Reveal and back up seed phrases again later for any wallet</p>
           </div>
         </div>
         <div className="p-4 space-y-4">
+          <div className="rounded-lg border border-yellow-500/20 bg-yellow-500/10 px-3 py-2 text-sm text-yellow-100/90">
+            Enter the wallet password to reveal the recovery phrase again. Keep it offline and never share it.
+          </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <select
               value={backupWalletId}
@@ -472,6 +556,81 @@ export default function SettingsPage() {
           <p className="text-xs text-muted-foreground">
             Current auto-lock: {autoLockMinutes === 0 ? 'Never' : `${autoLockMinutes} minute(s)`}
           </p>
+        </div>
+      </motion.div>
+
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ delay: 0.09 }}
+        className="rounded-2xl bg-card border border-border overflow-hidden"
+      >
+        <div className="p-4 border-b border-border flex items-center gap-3">
+          <div className="w-10 h-10 rounded-xl bg-cyan-500/20 flex items-center justify-center">
+            <HardDrive className="w-5 h-5 text-cyan-400" />
+          </div>
+          <div>
+            <h2 className="font-semibold">Wallet File</h2>
+            <p className="text-sm text-muted-foreground">View the current wallet file location and create an encrypted backup</p>
+          </div>
+        </div>
+
+        <div className="p-4 space-y-4">
+          <div>
+            <p className="text-sm text-muted-foreground mb-1">Storage Location</p>
+            {isDesktopApp ? (
+              <div className="space-y-2">
+                <p className="font-mono text-sm bg-muted p-3 rounded-lg break-all">
+                  {walletFileInfo?.walletFilePath || 'Loading wallet file path...'}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {walletFileInfo?.exists
+                    ? 'This is the encrypted desktop wallet.dat file currently used by the app.'
+                    : 'The desktop wallet.dat file will appear here once the encrypted vault is synced.'}
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                <p className="font-medium">Browser storage</p>
+                <p className="text-xs text-muted-foreground">
+                  The web build stores the encrypted wallet in browser storage, so no filesystem path is available here.
+                </p>
+              </div>
+            )}
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <Button
+              variant="outline"
+              onClick={() => void handleOpenWalletFolder()}
+              disabled={!isDesktopApp || isWalletFileBusy}
+              className="w-full"
+            >
+              <FolderOpen className="w-4 h-4 mr-2" />
+              Open Wallet Folder
+            </Button>
+            <Button
+              variant="outline"
+              onClick={() => void handleBackupWalletFile()}
+              disabled={isWalletFileBusy}
+              className="w-full"
+            >
+              <Download className="w-4 h-4 mr-2" />
+              {isDesktopApp ? 'Backup wallet.dat' : 'Download Encrypted Backup'}
+            </Button>
+          </div>
+
+          {walletFileNotice && (
+            <div
+              className={`rounded-lg border px-3 py-2 text-sm ${
+                walletFileNoticeTone === 'success'
+                  ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-200'
+                  : 'border-red-500/30 bg-red-500/10 text-red-200'
+              }`}
+            >
+              {walletFileNotice}
+            </div>
+          )}
         </div>
       </motion.div>
 

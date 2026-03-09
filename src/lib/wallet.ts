@@ -25,6 +25,14 @@ interface EncryptedWalletBlob {
   ciphertext: string
 }
 
+interface EncryptedWalletBackupFile {
+  format: 'kaspa-wallet-encrypted-vault'
+  version: 1
+  exportedAt: number
+  encryptedWallet: EncryptedWalletBlob
+  meta: WalletVaultMeta
+}
+
 export interface WalletProfileVaultData {
   id: string
   name: string
@@ -266,12 +274,68 @@ function normalizeWalletVault(vault: unknown): WalletVaultData {
   throw new Error('Invalid wallet vault content')
 }
 
-function saveWalletMetaToStorage(vault: WalletVaultData): void {
+function saveWalletMetaToStorage(vault: WalletVaultData): WalletVaultMeta {
   const meta: WalletVaultMeta = {
     wallets: summarizeWallets(vault.wallets),
     activeWalletId: vault.activeWalletId,
   }
   localStorage.setItem(ENCRYPTED_WALLET_META_KEY, JSON.stringify(meta))
+  return meta
+}
+
+function buildEncryptedWalletBackupFile(blob: EncryptedWalletBlob, meta: WalletVaultMeta): EncryptedWalletBackupFile {
+  return {
+    format: 'kaspa-wallet-encrypted-vault',
+    version: 1,
+    exportedAt: Date.now(),
+    encryptedWallet: blob,
+    meta,
+  }
+}
+
+function parseEncryptedWalletBackupFile(raw: string): { blob: EncryptedWalletBlob; meta: WalletVaultMeta } {
+  const parsed = JSON.parse(raw) as Partial<EncryptedWalletBackupFile>
+
+  if (
+    parsed &&
+    parsed.format === 'kaspa-wallet-encrypted-vault' &&
+    parsed.version === 1 &&
+    parsed.encryptedWallet &&
+    parsed.meta
+  ) {
+    return {
+      blob: parseEncryptedBlob(JSON.stringify(parsed.encryptedWallet)),
+      meta: {
+        wallets: Array.isArray(parsed.meta.wallets) ? parsed.meta.wallets : [],
+        activeWalletId: typeof parsed.meta.activeWalletId === 'string' ? parsed.meta.activeWalletId : '',
+      },
+    }
+  }
+
+  return {
+    blob: parseEncryptedBlob(raw),
+    meta: loadEncryptedWalletMetaFromStorage(),
+  }
+}
+
+async function readDesktopWalletBackupFile(): Promise<{ blob: EncryptedWalletBlob; meta: WalletVaultMeta } | null> {
+  if (!window.kaspaDesktop?.readWalletFile) return null
+
+  const raw = await window.kaspaDesktop.readWalletFile()
+  if (!raw) return null
+  return parseEncryptedWalletBackupFile(raw)
+}
+
+async function syncDesktopWalletFile(blob: EncryptedWalletBlob | null, meta: WalletVaultMeta | null): Promise<void> {
+  if (!window.kaspaDesktop?.syncWalletFile) return
+
+  if (!blob || !meta) {
+    await window.kaspaDesktop.syncWalletFile(null)
+    return
+  }
+
+  const payload = JSON.stringify(buildEncryptedWalletBackupFile(blob, meta), null, 2)
+  await window.kaspaDesktop.syncWalletFile(payload)
 }
 
 export function loadEncryptedWalletMetaFromStorage(): WalletVaultMeta {
@@ -313,6 +377,20 @@ export function loadEncryptedWalletMetaFromStorage(): WalletVaultMeta {
   } catch {
     return fallback
   }
+}
+
+export async function loadEncryptedWalletMeta(): Promise<WalletVaultMeta> {
+  try {
+    const desktopFile = await readDesktopWalletBackupFile()
+    if (desktopFile) {
+      localStorage.setItem(ENCRYPTED_WALLET_META_KEY, JSON.stringify(desktopFile.meta))
+      return desktopFile.meta
+    }
+  } catch {
+    // Fall back to browser storage below.
+  }
+
+  return loadEncryptedWalletMetaFromStorage()
 }
 
 export function generateMnemonic(): string {
@@ -424,6 +502,19 @@ export function hasEncryptedWalletInStorage(): boolean {
   return localStorage.getItem(ENCRYPTED_WALLET_STORAGE_KEY) !== null
 }
 
+export async function hasEncryptedWalletStored(): Promise<boolean> {
+  try {
+    if (window.kaspaDesktop?.readWalletFile) {
+      const raw = await window.kaspaDesktop.readWalletFile()
+      if (raw) return true
+    }
+  } catch {
+    // Fall back to browser storage below.
+  }
+
+  return hasEncryptedWalletInStorage()
+}
+
 export async function saveEncryptedWalletToStorage(vault: WalletVaultData, password: string): Promise<void> {
   assertWebCryptoAvailable()
   validatePasswordStrength(password)
@@ -447,18 +538,25 @@ export async function saveEncryptedWalletToStorage(vault: WalletVaultData, passw
   }
 
   localStorage.setItem(ENCRYPTED_WALLET_STORAGE_KEY, JSON.stringify(blob))
-  saveWalletMetaToStorage(normalizedVault)
+  const meta = saveWalletMetaToStorage(normalizedVault)
+
+  try {
+    await syncDesktopWalletFile(blob, meta)
+  } catch {
+    // Keep web and desktop wallet flows working even if desktop file sync fails.
+  }
 }
 
 export async function loadEncryptedWalletFromStorage(password: string): Promise<WalletVaultData> {
   assertWebCryptoAvailable()
-  const rawBlob = localStorage.getItem(ENCRYPTED_WALLET_STORAGE_KEY)
+  const desktopFile = await readDesktopWalletBackupFile()
+  const rawBlob = desktopFile ? JSON.stringify(desktopFile.blob) : localStorage.getItem(ENCRYPTED_WALLET_STORAGE_KEY)
   if (!rawBlob) {
     throw new Error('No encrypted wallet found')
   }
 
   try {
-    const blob = parseEncryptedBlob(rawBlob)
+    const blob = desktopFile?.blob ?? parseEncryptedBlob(rawBlob)
     const key = await deriveEncryptionKey(password, base64ToBytes(blob.salt))
     const decrypted = await globalThis.crypto.subtle.decrypt(
       { name: 'AES-GCM', iv: toArrayBuffer(base64ToBytes(blob.iv)) },
@@ -468,7 +566,19 @@ export async function loadEncryptedWalletFromStorage(password: string): Promise<
 
     const decoded = textDecoder().decode(new Uint8Array(decrypted))
     const parsed = JSON.parse(decoded) as unknown
-    return normalizeWalletVault(parsed)
+    const normalizedVault = normalizeWalletVault(parsed)
+
+    localStorage.setItem(ENCRYPTED_WALLET_STORAGE_KEY, JSON.stringify(blob))
+    const meta = desktopFile?.meta ?? loadEncryptedWalletMetaFromStorage()
+    localStorage.setItem(ENCRYPTED_WALLET_META_KEY, JSON.stringify(meta))
+
+    try {
+      await syncDesktopWalletFile(blob, meta)
+    } catch {
+      // Ignore desktop sync failures during unlock/load.
+    }
+
+    return normalizedVault
   } catch {
     throw new Error('Invalid password or corrupted wallet data')
   }
@@ -477,6 +587,26 @@ export async function loadEncryptedWalletFromStorage(password: string): Promise<
 export function clearEncryptedWalletFromStorage(): void {
   localStorage.removeItem(ENCRYPTED_WALLET_STORAGE_KEY)
   localStorage.removeItem(ENCRYPTED_WALLET_META_KEY)
+  void syncDesktopWalletFile(null, null).catch(() => {
+    // Ignore desktop sync failures while clearing storage.
+  })
+}
+
+export async function clearEncryptedWalletStorage(): Promise<void> {
+  localStorage.removeItem(ENCRYPTED_WALLET_STORAGE_KEY)
+  localStorage.removeItem(ENCRYPTED_WALLET_META_KEY)
+  await syncDesktopWalletFile(null, null)
+}
+
+export function getEncryptedWalletBackupPayload(): string {
+  const rawBlob = localStorage.getItem(ENCRYPTED_WALLET_STORAGE_KEY)
+  if (!rawBlob) {
+    throw new Error('No encrypted wallet found')
+  }
+
+  const blob = parseEncryptedBlob(rawBlob)
+  const meta = loadEncryptedWalletMetaFromStorage()
+  return JSON.stringify(buildEncryptedWalletBackupFile(blob, meta), null, 2)
 }
 
 export function loadLegacyWalletFromStorage(): WalletData | null {
